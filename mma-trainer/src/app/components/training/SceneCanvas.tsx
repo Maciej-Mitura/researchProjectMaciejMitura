@@ -2,9 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Engine, Scene, useScene } from "react-babylonjs";
-import { Vector3, SceneLoader, AssetContainer, AnimationGroup, ArcRotateCamera, AbstractMesh, Skeleton, ParticleSystem, StandardMaterial, Color3 } from "@babylonjs/core";
+import { Vector3, SceneLoader, AssetContainer, AnimationGroup, ArcRotateCamera, AbstractMesh, Skeleton, ParticleSystem, StandardMaterial, Color3, Scene as BabylonScene } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 import type { Technique } from "@/app/lib/techniques";
+import { Button } from "@/components/ui/button";
+import { RotateCcw, RotateCw, ZoomIn, ZoomOut, Home } from "lucide-react";
 
 type SceneCanvasProps = {
   className?: string;
@@ -397,14 +399,142 @@ function ZoomController() {
   return null;
 }
 
+// Component to provide scene reference (renders inside Scene)
+function SceneProvider({ sceneRef, onSceneReady }: { sceneRef: React.MutableRefObject<BabylonScene | null>; onSceneReady?: (scene: BabylonScene) => void }) {
+  const scene = useScene();
+
+  useEffect(() => {
+    if (scene) {
+      sceneRef.current = scene;
+      onSceneReady?.(scene);
+    }
+    return () => {
+      sceneRef.current = null;
+    };
+  }, [scene, sceneRef, onSceneReady]);
+
+  return null;
+}
+
+// Component for camera controls (rotate, zoom, reset)
+function CameraControls({ sceneRef, isSceneReady }: { sceneRef: React.MutableRefObject<BabylonScene | null>; isSceneReady: boolean }) {
+  const initialCameraStateRef = useRef<{
+    alpha: number;
+    beta: number;
+    radius: number;
+    target: Vector3;
+  } | null>(null);
+
+  const getCamera = (): ArcRotateCamera | null => {
+    const currentScene = sceneRef.current;
+    if (!currentScene) return null;
+    return currentScene.getCameraByName("camera") as ArcRotateCamera;
+  };
+
+  const handleRotateLeft = () => {
+    const camera = getCamera();
+    if (camera) {
+      camera.alpha += Math.PI / 8; // Rotate 22.5 degrees
+    }
+  };
+
+  const handleRotateRight = () => {
+    const camera = getCamera();
+    if (camera) {
+      camera.alpha -= Math.PI / 8; // Rotate 22.5 degrees
+    }
+  };
+
+  const handleZoomIn = () => {
+    const camera = getCamera();
+    if (camera) {
+      const newRadius = Math.max(1, camera.radius * 0.8);
+      camera.radius = newRadius;
+    }
+  };
+
+  const handleZoomOut = () => {
+    const camera = getCamera();
+    if (camera) {
+      const newRadius = Math.min(10, camera.radius * 1.25);
+      camera.radius = newRadius;
+    }
+  };
+
+  const handleReset = () => {
+    const camera = getCamera();
+    if (camera && initialCameraStateRef.current) {
+      camera.alpha = initialCameraStateRef.current.alpha;
+      camera.beta = initialCameraStateRef.current.beta;
+      camera.radius = initialCameraStateRef.current.radius;
+      camera.target = initialCameraStateRef.current.target.clone();
+    }
+  };
+
+  // Update initial state when scene becomes available
+  useEffect(() => {
+    const currentScene = sceneRef.current;
+    if (!currentScene) return;
+
+    const camera = currentScene.getCameraByName("camera") as ArcRotateCamera;
+    if (camera && !initialCameraStateRef.current) {
+      // Store initial camera state for reset
+      initialCameraStateRef.current = {
+        alpha: camera.alpha,
+        beta: camera.beta,
+        radius: camera.radius,
+        target: camera.target.clone(),
+      };
+    }
+  }, [sceneRef, isSceneReady]);
+
+  // Don't render if scene is not available
+  if (!isSceneReady) return null;
+
+  return (
+    <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
+      <div className="flex gap-1.5">
+        <Button variant="outline" size="icon-sm" onClick={handleRotateLeft} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Rotate left" title="Rotate left">
+          <RotateCcw className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon-sm" onClick={handleRotateRight} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Rotate right" title="Rotate right">
+          <RotateCw className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="flex gap-1.5">
+        <Button variant="outline" size="icon-sm" onClick={handleZoomIn} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Zoom in" title="Zoom in">
+          <ZoomIn className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon-sm" onClick={handleZoomOut} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Zoom out" title="Zoom out">
+          <ZoomOut className="h-4 w-4" />
+        </Button>
+      </div>
+      <Button variant="outline" size="icon-sm" onClick={handleReset} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Reset camera" title="Reset camera">
+        <Home className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
 export default function SceneCanvas({ className, technique }: SceneCanvasProps) {
   // Use technique ID in canvas ID to force a new Engine/Scene when technique changes
   // This ensures complete cleanup and prevents old meshes from persisting
   const canvasId = `training-canvas-${technique?.id || "none"}`;
+  const sceneRef = useRef<BabylonScene | null>(null);
+  const [isSceneReady, setIsSceneReady] = useState(false);
+
+  // Reset scene ready state when technique changes
+  useEffect(() => {
+    setIsSceneReady(false);
+  }, [technique?.id]);
+
+  const handleSceneReady = (scene: BabylonScene) => {
+    setIsSceneReady(true);
+  };
 
   return (
     <div
-      className={className}
+      className={`${className} relative`}
       style={{ width: "100%", height: "100%" }}
       onWheel={(e) => {
         // Prevent page scroll when scrolling inside animation window
@@ -420,8 +550,10 @@ export default function SceneCanvas({ className, technique }: SceneCanvasProps) 
           <GroundMaterial />
           <TechniqueLoader technique={technique || null} />
           <ZoomController />
+          <SceneProvider sceneRef={sceneRef} onSceneReady={handleSceneReady} />
         </Scene>
       </Engine>
+      <CameraControls sceneRef={sceneRef} isSceneReady={isSceneReady} />
     </div>
   );
 }
