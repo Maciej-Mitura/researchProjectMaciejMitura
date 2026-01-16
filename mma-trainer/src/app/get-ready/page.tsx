@@ -1,19 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams, useRouter } from "next/navigation";
 import { TechniqueDisplay } from "@/app/components/training/TechniqueDisplay";
-import { CameraTest } from "@/app/components/homepage/CameraTest";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { getTechniqueById, getAllTechniques, type Technique } from "@/app/lib/techniques";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Video, VideoOff } from "lucide-react";
+import type { PoseCameraOverlayHandle } from "@/app/components/pose/PoseCameraOverlay";
+
+// Dynamically import PoseCameraOverlay to keep it out of other routes' bundles
+const PoseCameraOverlay = dynamic(() => import("@/app/components/pose/PoseCameraOverlay").then((mod) => ({ default: mod.PoseCameraOverlay })), { ssr: false });
 
 export default function GetReadyPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [technique, setTechnique] = useState<Technique | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [cameraPermissionGranted, setCameraPermissionGranted] = useState(false);
+  const [isRequestingPermission, setIsRequestingPermission] = useState(false);
+  const poseCameraOverlayRef = useRef<PoseCameraOverlayHandle>(null);
 
   useEffect(() => {
     const techniqueId = searchParams.get("techniqueId");
@@ -51,6 +58,55 @@ export default function GetReadyPage() {
     router.push("/training-setup");
   };
 
+  const handleRequestCameraPermission = async () => {
+    setIsRequestingPermission(true);
+    try {
+      // Check if getUserMedia is available
+      if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("Camera access is not supported in this browser.");
+        setIsRequestingPermission(false);
+        return;
+      }
+
+      // Request camera permission
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: "user",
+        },
+        audio: false,
+      });
+
+      // Permission granted - stop the stream immediately (we just needed permission)
+      stream.getTracks().forEach((track) => track.stop());
+      setCameraPermissionGranted(true);
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.name === "NotAllowedError") {
+          alert("Camera permission was denied. Please allow camera access in your browser settings and try again.");
+        } else if (err.name === "NotFoundError") {
+          alert("No camera found. Please connect a camera and try again.");
+        } else {
+          alert(`Failed to access camera: ${err.message}`);
+        }
+      } else {
+        alert("Failed to access camera. Please try again.");
+      }
+    } finally {
+      setIsRequestingPermission(false);
+    }
+  };
+
+  const handleStopCamera = () => {
+    // Stop the camera overlay component
+    if (poseCameraOverlayRef.current) {
+      poseCameraOverlayRef.current.stop();
+    }
+    // Reset permission state to show "Enable Camera" button again
+    setCameraPermissionGranted(false);
+  };
+
   if (!technique) {
     return (
       <div className="container mx-auto px-4 py-8 max-w-4xl">
@@ -81,10 +137,33 @@ export default function GetReadyPage() {
         {/* Technique Display - Using reusable component */}
         {/* <TechniqueDisplay currentTechnique={technique} currentIndex={currentIndex} totalTechniques={allTechniques.length} onPrevious={handlePrevious} onNext={handleNext} /> */}
 
-        {/* Camera View */}
+        {/* Pose Detection Camera View */}
         <div className="rounded-lg border bg-card p-4">
-          <h2 className="text-lg font-semibold mb-4">Camera View</h2>
-          <CameraTest autoStart={true} showStopButton={false} showSuccessNotification={false} showTitle={false} />
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Pose Detection</h2>
+            {cameraPermissionGranted && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleStopCamera}
+                className="bg-background/80 backdrop-blur-sm hover:bg-background/90"
+              >
+                <VideoOff className="h-4 w-4 mr-2" />
+                Stop Camera
+              </Button>
+            )}
+          </div>
+          {!cameraPermissionGranted ? (
+            <div className="flex flex-col items-center justify-center py-12 space-y-4">
+              <p className="text-muted-foreground text-center">Enable camera access to see pose detection overlay</p>
+              <Button variant="default" size="lg" onClick={handleRequestCameraPermission} disabled={isRequestingPermission} className="min-w-[200px]">
+                <Video className="h-4 w-4 mr-2" />
+                {isRequestingPermission ? "Requesting Permission..." : "Enable Camera"}
+              </Button>
+            </div>
+          ) : (
+            <PoseCameraOverlay ref={poseCameraOverlayRef} showVideo={true} mirrored={true} inferenceFps={15} />
+          )}
         </div>
 
         {/* Action Buttons */}
