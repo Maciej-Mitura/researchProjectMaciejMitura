@@ -22,7 +22,7 @@ export function ActionButtons({
 
   const handleStartTraining = () => {
     if (canStartTraining) {
-      router.push("/training");
+      router.push("/training-setup");
     }
   };
 

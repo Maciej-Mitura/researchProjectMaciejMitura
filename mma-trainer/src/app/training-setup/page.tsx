@@ -57,7 +57,7 @@ export default function TrainingPage() {
         </Button>
 
         <div className="text-center space-y-2">
-          <h1 className="text-3xl font-bold tracking-tight">Training</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Training Setup</h1>
           <p className="text-muted-foreground">Select a technique to practice and view the reference animation</p>
         </div>
 

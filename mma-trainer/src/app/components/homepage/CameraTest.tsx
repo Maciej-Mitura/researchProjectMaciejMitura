@@ -21,11 +21,17 @@ interface CameraSettings {
 interface CameraTestProps {
   autoStart?: boolean;
   onValidationComplete?: (isValid: boolean) => void;
+  showStopButton?: boolean;
+  showSuccessNotification?: boolean;
+  showTitle?: boolean;
 }
 
 export function CameraTest({
   autoStart = false,
   onValidationComplete,
+  showStopButton = true,
+  showSuccessNotification = true,
+  showTitle = true,
 }: CameraTestProps) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [cameraSettings, setCameraSettings] = useState<CameraSettings | null>(
@@ -204,16 +210,18 @@ export function CameraTest({
 
   return (
     <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>Camera Test</CardTitle>
-          {isStreaming && (
-            <Button variant="destructive" size="sm" onClick={stopCamera}>
-              Stop Camera
-            </Button>
-          )}
-        </div>
-      </CardHeader>
+      {(showTitle || (showStopButton && isStreaming)) && (
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            {showTitle && <CardTitle>Camera Test</CardTitle>}
+            {showStopButton && isStreaming && (
+              <Button variant="destructive" size="sm" onClick={stopCamera}>
+                Stop Camera
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+      )}
       <CardContent className="space-y-4">
         {isLoading && (
           <div className="text-center py-8">
@@ -223,7 +231,7 @@ export function CameraTest({
           </div>
         )}
 
-        {isValidated && (
+        {isValidated && showSuccessNotification && (
           <div className="rounded-md bg-green-500/10 border border-green-500/20 p-4">
             <p className="text-sm font-semibold text-green-600 dark:text-green-400 mb-1">
               ✓ Successfully detected a fitting camera
