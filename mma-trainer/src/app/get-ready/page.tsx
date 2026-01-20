@@ -58,6 +58,11 @@ export default function GetReadyPage() {
     router.push("/training-setup");
   };
 
+  const handleStartPractice = () => {
+    if (!technique) return;
+    router.push(`/training/live-demo?techniqueId=${technique.id}`);
+  };
+
   const handleRequestCameraPermission = async () => {
     setIsRequestingPermission(true);
     try {
@@ -142,12 +147,7 @@ export default function GetReadyPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold">Pose Detection</h2>
             {cameraPermissionGranted && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleStopCamera}
-                className="bg-background/80 backdrop-blur-sm hover:bg-background/90"
-              >
+              <Button variant="outline" size="sm" onClick={handleStopCamera} className="bg-background/80 backdrop-blur-sm hover:bg-background/90">
                 <VideoOff className="h-4 w-4 mr-2" />
                 Stop Camera
               </Button>
@@ -168,7 +168,7 @@ export default function GetReadyPage() {
 
         {/* Action Buttons */}
         <div className="flex justify-center">
-          <Button variant="default" size="lg" className="min-w-[200px]">
+          <Button variant="default" size="lg" className="min-w-[200px]" onClick={handleStartPractice}>
             Start Practice
           </Button>
         </div>

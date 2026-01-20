@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Engine, Scene, useScene } from "react-babylonjs";
 import { Vector3, SceneLoader, AssetContainer, AnimationGroup, ArcRotateCamera, AbstractMesh, Skeleton, ParticleSystem, StandardMaterial, Color3, Scene as BabylonScene } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
@@ -11,14 +11,56 @@ import { RotateCcw, RotateCw, ZoomIn, ZoomOut, Home } from "lucide-react";
 type SceneCanvasProps = {
   className?: string;
   technique?: Technique | null;
+  /**
+   * Optional callback invoked at a fixed sampling rate (default ~15 FPS)
+   * with animation timing and (when available) a simplified skeleton feature vector.
+   */
+  onReferenceFrame?: (frame: ReferenceFrame) => void;
+  referenceFps?: number;
+};
+
+export type ReferenceFrame = {
+  /** Timestamp (ms). Standardized to Date.now() for alignment. */
+  timestampMs: number;
+  /** Wall-clock timestamp (ms) from Date.now() */
+  wallClockMs: number;
+  /** Last engine delta time (ms) */
+  deltaMs: number;
+  /**
+   * Optional limb positions (world space) when available.
+   * Used for movement onset detection (velocity threshold).
+   */
+  limbPositions?: {
+    leftWrist?: { x: number; y: number; z: number };
+    rightWrist?: { x: number; y: number; z: number };
+    leftAnkle?: { x: number; y: number; z: number };
+    rightAnkle?: { x: number; y: number; z: number };
+  };
+  animation: {
+    from: number | null;
+    to: number | null;
+    currentFrame: number | null;
+  };
+  skeletonAvailable: boolean;
+  /** Simplified reference pose feature vector (angles / rotations). */
+  featureVector: number[];
 };
 
 // Component to handle technique loading inside the Scene
-function TechniqueLoader({ technique }: { technique: Technique | null }) {
+function TechniqueLoader({
+  technique,
+  activeAnimationGroupRef,
+  activeSkeletonRef,
+  activeSkeletonMeshRef,
+}: {
+  technique: Technique | null;
+  activeAnimationGroupRef: React.MutableRefObject<AnimationGroup | null>;
+  activeSkeletonRef: React.MutableRefObject<Skeleton | null>;
+  activeSkeletonMeshRef: React.MutableRefObject<AbstractMesh | null>;
+}) {
   const scene = useScene();
   const containerRef = useRef<AssetContainer | null>(null);
   const animationGroupsRef = useRef<AnimationGroup[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
 
   // Extract technique ID for dependency tracking
   const techniqueId = technique?.id || null;
@@ -37,6 +79,9 @@ function TechniqueLoader({ technique }: { technique: Technique | null }) {
           group.stop();
         });
         animationGroupsRef.current = [];
+        activeAnimationGroupRef.current = null;
+        activeSkeletonRef.current = null;
+        activeSkeletonMeshRef.current = null;
         containerRef.current.removeAllFromScene();
         containerRef.current.dispose();
         containerRef.current = null;
@@ -45,7 +90,6 @@ function TechniqueLoader({ technique }: { technique: Technique | null }) {
     }
 
     const loadTechnique = async () => {
-      setIsLoading(true);
       try {
         console.log("Loading technique:", technique.name, "from:", technique.assetUrl);
 
@@ -218,12 +262,20 @@ function TechniqueLoader({ technique }: { technique: Technique | null }) {
             // Use start(true) for looping as in the example
             targetGroup.start(true); // loop = true
             console.log("Started animation:", targetGroup.name);
+            activeAnimationGroupRef.current = targetGroup;
           } else {
             console.warn("No animation group found to play");
+            activeAnimationGroupRef.current = null;
           }
         } else {
           console.warn("No animation groups found in the loaded model");
+          activeAnimationGroupRef.current = null;
         }
+
+        // Track a primary skeleton reference if available
+        activeSkeletonRef.current = container.skeletons && container.skeletons.length > 0 ? container.skeletons[0] : null;
+        activeSkeletonMeshRef.current =
+          (container.meshes.find((m) => (m as any)?.skeleton) as AbstractMesh | undefined) ?? null;
 
         // Try to find meshes - check all meshes, not just root
         const allMeshes = container.meshes;
@@ -316,8 +368,6 @@ function TechniqueLoader({ technique }: { technique: Technique | null }) {
         if (error instanceof Error) {
           console.error("Error details:", error.message, error.stack);
         }
-      } finally {
-        setIsLoading(false);
       }
     };
 
@@ -336,6 +386,9 @@ function TechniqueLoader({ technique }: { technique: Technique | null }) {
           group.stop();
         });
         animationGroupsRef.current = [];
+        activeAnimationGroupRef.current = null;
+        activeSkeletonRef.current = null;
+        activeSkeletonMeshRef.current = null;
         containerRef.current.removeAllFromScene();
         containerRef.current.dispose();
         containerRef.current = null;
@@ -399,19 +452,252 @@ function ZoomController() {
   return null;
 }
 
+function getCurrentAnimationFrame(group: AnimationGroup | null): number | null {
+  if (!group) return null;
+  const anyGroup = group as unknown as { getCurrentFrame?: () => number; animatables?: Array<{ masterFrame?: number }> };
+  if (typeof anyGroup.getCurrentFrame === "function") {
+    try {
+      return anyGroup.getCurrentFrame();
+    } catch {
+      // fall through
+    }
+  }
+  const firstAnim = anyGroup.animatables?.[0];
+  if (firstAnim && typeof firstAnim.masterFrame === "number") {
+    return firstAnim.masterFrame;
+  }
+  return null;
+}
+
+function angleDeg(a: Vector3, b: Vector3, c: Vector3): number {
+  // Angle at point b between vectors (a-b) and (c-b)
+  const v1 = a.subtract(b);
+  const v2 = c.subtract(b);
+  const n1 = v1.length();
+  const n2 = v2.length();
+  if (n1 === 0 || n2 === 0) return NaN;
+  const cos = Math.min(1, Math.max(-1, Vector3.Dot(v1, v2) / (n1 * n2)));
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+function normalizeBoneName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/^.*:/, "") // strip namespace like "mixamorig:"
+    .replace(/[^a-z0-9]+/g, ""); // remove separators
+}
+
+function findBoneByAny(skeleton: Skeleton, candidates: string[]): any | null {
+  const bones = skeleton.bones;
+  for (const cand of candidates) {
+    const needle = cand.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const match = bones.find((b) => normalizeBoneName(b.name).includes(needle));
+    if (match) return match;
+  }
+  return null;
+}
+
+function getBoneWorldPos(bone: any, mesh: AbstractMesh | null): Vector3 | null {
+  if (!bone) return null;
+  try {
+    if (typeof bone.getAbsolutePosition === "function") {
+      // Babylon Bone.getAbsolutePosition optionally accepts a mesh
+      return mesh ? bone.getAbsolutePosition(mesh) : bone.getAbsolutePosition();
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    if (typeof bone.getPosition === "function") {
+      return bone.getPosition();
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Build a 6-angle feature vector (degrees):
+ * [L_elbow, R_elbow, L_knee, R_knee, L_shoulder, R_shoulder]
+ *
+ * Note: this uses best-effort bone name matching (Mixamo / common rigs).
+ * If required bones aren't found, returns [] (caller can still align via animation time).
+ */
+function buildReferenceAngleVector(skeleton: Skeleton, mesh: AbstractMesh | null): number[] {
+  // Arms (Mixamo-style): LeftArm -> LeftForeArm -> LeftHand
+  const lShoulderBone = findBoneByAny(skeleton, ["leftarm", "larm", "leftupperarm", "upperarm_l", "lupperarm"]);
+  const lElbowBone = findBoneByAny(skeleton, ["leftforearm", "lforearm", "leftlowerarm", "lowerarm_l", "lLowerArm"]);
+  const lWristBone = findBoneByAny(skeleton, ["lefthand", "lhand", "leftwrist", "wrist_l"]);
+
+  const rShoulderBone = findBoneByAny(skeleton, ["rightarm", "rarm", "rightupperarm", "upperarm_r", "rupperarm"]);
+  const rElbowBone = findBoneByAny(skeleton, ["rightforearm", "rforearm", "rightlowerarm", "lowerarm_r", "rLowerArm"]);
+  const rWristBone = findBoneByAny(skeleton, ["righthand", "rhand", "rightwrist", "wrist_r"]);
+
+  // Legs (Mixamo-style): LeftUpLeg -> LeftLeg -> LeftFoot
+  const lHipBone = findBoneByAny(skeleton, ["leftupleg", "lthigh", "thigh_l", "upperleg_l"]);
+  const lKneeBone = findBoneByAny(skeleton, ["leftleg", "lcalf", "calf_l", "lowerleg_l"]);
+  const lAnkleBone = findBoneByAny(skeleton, ["leftfoot", "lfoot", "leftankle", "ankle_l"]);
+
+  const rHipBone = findBoneByAny(skeleton, ["rightupleg", "rthigh", "thigh_r", "upperleg_r"]);
+  const rKneeBone = findBoneByAny(skeleton, ["rightleg", "rcalf", "calf_r", "lowerleg_r"]);
+  const rAnkleBone = findBoneByAny(skeleton, ["rightfoot", "rfoot", "rightankle", "ankle_r"]);
+
+  // Torso anchor (for shoulder angle)
+  const torsoBone = findBoneByAny(skeleton, ["hips", "pelvis", "spine", "chest"]);
+
+  const ls = getBoneWorldPos(lShoulderBone, mesh);
+  const le = getBoneWorldPos(lElbowBone, mesh);
+  const lw = getBoneWorldPos(lWristBone, mesh);
+  const rs = getBoneWorldPos(rShoulderBone, mesh);
+  const re = getBoneWorldPos(rElbowBone, mesh);
+  const rw = getBoneWorldPos(rWristBone, mesh);
+
+  const lh = getBoneWorldPos(lHipBone, mesh);
+  const lk = getBoneWorldPos(lKneeBone, mesh);
+  const la = getBoneWorldPos(lAnkleBone, mesh);
+  const rh = getBoneWorldPos(rHipBone, mesh);
+  const rk = getBoneWorldPos(rKneeBone, mesh);
+  const ra = getBoneWorldPos(rAnkleBone, mesh);
+
+  const torso = getBoneWorldPos(torsoBone, mesh);
+
+  // If we can't even compute the core elbow/knee points, return [] and let alignment still happen via time.
+  if (!ls || !le || !lw || !rs || !re || !rw || !lh || !lk || !la || !rh || !rk || !ra) {
+    return [];
+  }
+
+  const leftElbow = angleDeg(ls, le, lw);
+  const rightElbow = angleDeg(rs, re, rw);
+  const leftKnee = angleDeg(lh, lk, la);
+  const rightKnee = angleDeg(rh, rk, ra);
+
+  // Shoulder angle: torso -> shoulder -> elbow (best-effort torso anchor)
+  const leftShoulder = torso ? angleDeg(torso, ls, le) : NaN;
+  const rightShoulder = torso ? angleDeg(torso, rs, re) : NaN;
+
+  const vec = [leftElbow, rightElbow, leftKnee, rightKnee, leftShoulder, rightShoulder];
+  // If shoulder angles are missing (NaN), still return vector with NaNs stripped? We'll keep vector as-is.
+  return vec;
+}
+
+function buildReferenceLimbPositions(
+  skeleton: Skeleton,
+  mesh: AbstractMesh | null
+): ReferenceFrame["limbPositions"] {
+  // Best-effort: derive wrist/ankle positions from common bone names.
+  const lwBone = findBoneByAny(skeleton, ["lefthand", "lhand", "leftwrist", "wrist_l"]);
+  const rwBone = findBoneByAny(skeleton, ["righthand", "rhand", "rightwrist", "wrist_r"]);
+  const laBone = findBoneByAny(skeleton, ["leftfoot", "lfoot", "leftankle", "ankle_l"]);
+  const raBone = findBoneByAny(skeleton, ["rightfoot", "rfoot", "rightankle", "ankle_r"]);
+
+  const lw = getBoneWorldPos(lwBone, mesh);
+  const rw = getBoneWorldPos(rwBone, mesh);
+  const la = getBoneWorldPos(laBone, mesh);
+  const ra = getBoneWorldPos(raBone, mesh);
+
+  const out: NonNullable<ReferenceFrame["limbPositions"]> = {};
+  if (lw) out.leftWrist = { x: lw.x, y: lw.y, z: lw.z };
+  if (rw) out.rightWrist = { x: rw.x, y: rw.y, z: rw.z };
+  if (la) out.leftAnkle = { x: la.x, y: la.y, z: la.z };
+  if (ra) out.rightAnkle = { x: ra.x, y: ra.y, z: ra.z };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function ReferenceSampler({
+  activeAnimationGroupRef,
+  activeSkeletonRef,
+  activeSkeletonMeshRef,
+  onReferenceFrame,
+  referenceFps,
+}: {
+  activeAnimationGroupRef: React.MutableRefObject<AnimationGroup | null>;
+  activeSkeletonRef: React.MutableRefObject<Skeleton | null>;
+  activeSkeletonMeshRef: React.MutableRefObject<AbstractMesh | null>;
+  onReferenceFrame?: (frame: ReferenceFrame) => void;
+  referenceFps: number;
+}) {
+  const scene = useScene();
+  const onFrameRef = useRef<typeof onReferenceFrame>(onReferenceFrame);
+  const accumulatorMsRef = useRef(0);
+
+  useEffect(() => {
+    onFrameRef.current = onReferenceFrame;
+  }, [onReferenceFrame]);
+
+  useEffect(() => {
+    if (!scene) return;
+
+    const minIntervalMs = 1000 / Math.max(1, referenceFps);
+
+    const obs = scene.onBeforeRenderObservable.add(() => {
+      const cb = onFrameRef.current;
+      if (!cb) return;
+
+      const deltaMs = scene.getEngine().getDeltaTime();
+      accumulatorMsRef.current += deltaMs;
+
+      if (accumulatorMsRef.current < minIntervalMs) return;
+      accumulatorMsRef.current = accumulatorMsRef.current % minIntervalMs;
+
+      const group = activeAnimationGroupRef.current;
+      // Only emit while animation is actually playing.
+      // This ensures "recording active" (callback provided) AND "animation playing".
+      if (!group || !(group as any).isPlaying) return;
+      const skeleton = activeSkeletonRef.current;
+      const skelMesh = activeSkeletonMeshRef.current;
+
+      const featureVector = skeleton ? buildReferenceAngleVector(skeleton, skelMesh) : [];
+      const limbPositions = skeleton ? buildReferenceLimbPositions(skeleton, skelMesh) : undefined;
+      const wallClockNow = Date.now();
+
+      cb({
+        // Standardize timestamps for alignment: use Date.now() for both pose + reference.
+        timestampMs: wallClockNow,
+        wallClockMs: wallClockNow,
+        deltaMs,
+        limbPositions,
+        animation: {
+          from: group ? group.from : null,
+          to: group ? group.to : null,
+          currentFrame: getCurrentAnimationFrame(group),
+        },
+        skeletonAvailable: !!skeleton,
+        featureVector,
+      });
+    });
+
+    return () => {
+      scene.onBeforeRenderObservable.remove(obs);
+    };
+  }, [scene, activeAnimationGroupRef, activeSkeletonRef, activeSkeletonMeshRef, referenceFps]);
+
+  return null;
+}
+
 // Component to provide scene reference (renders inside Scene)
 function SceneProvider({ sceneRef, onSceneReady }: { sceneRef: React.MutableRefObject<BabylonScene | null>; onSceneReady?: (scene: BabylonScene) => void }) {
   const scene = useScene();
+  const onSceneReadyRef = useRef<typeof onSceneReady>(onSceneReady);
+  const lastSceneRef = useRef<BabylonScene | null>(null);
+
+  useEffect(() => {
+    onSceneReadyRef.current = onSceneReady;
+  }, [onSceneReady]);
 
   useEffect(() => {
     if (scene) {
       sceneRef.current = scene;
-      onSceneReady?.(scene);
+      // Call only once per scene instance to avoid render loops.
+      if (lastSceneRef.current !== scene) {
+        lastSceneRef.current = scene;
+        onSceneReadyRef.current?.(scene);
+      }
     }
     return () => {
       sceneRef.current = null;
     };
-  }, [scene, sceneRef, onSceneReady]);
+  }, [scene, sceneRef]);
 
   return null;
 }
@@ -516,21 +802,24 @@ function CameraControls({ sceneRef, isSceneReady }: { sceneRef: React.MutableRef
   );
 }
 
-export default function SceneCanvas({ className, technique }: SceneCanvasProps) {
+export default function SceneCanvas({ className, technique, onReferenceFrame, referenceFps = 15 }: SceneCanvasProps) {
   // Use technique ID in canvas ID to force a new Engine/Scene when technique changes
   // This ensures complete cleanup and prevents old meshes from persisting
   const canvasId = `training-canvas-${technique?.id || "none"}`;
   const sceneRef = useRef<BabylonScene | null>(null);
   const [isSceneReady, setIsSceneReady] = useState(false);
+  const activeAnimationGroupRef = useRef<AnimationGroup | null>(null);
+  const activeSkeletonRef = useRef<Skeleton | null>(null);
+  const activeSkeletonMeshRef = useRef<AbstractMesh | null>(null);
 
   // Reset scene ready state when technique changes
   useEffect(() => {
     setIsSceneReady(false);
   }, [technique?.id]);
 
-  const handleSceneReady = (scene: BabylonScene) => {
+  const handleSceneReady = useCallback((_scene: BabylonScene) => {
     setIsSceneReady(true);
-  };
+  }, []);
 
   return (
     <div
@@ -548,9 +837,21 @@ export default function SceneCanvas({ className, technique }: SceneCanvasProps) 
           <directionalLight name="directionalLight" direction={new Vector3(-1, -1, -1)} intensity={0.5} />
           <ground name="ground" width={4} height={4} />
           <GroundMaterial />
-          <TechniqueLoader technique={technique || null} />
+          <TechniqueLoader
+            technique={technique || null}
+            activeAnimationGroupRef={activeAnimationGroupRef}
+            activeSkeletonRef={activeSkeletonRef}
+            activeSkeletonMeshRef={activeSkeletonMeshRef}
+          />
           <ZoomController />
           <SceneProvider sceneRef={sceneRef} onSceneReady={handleSceneReady} />
+          <ReferenceSampler
+            activeAnimationGroupRef={activeAnimationGroupRef}
+            activeSkeletonRef={activeSkeletonRef}
+            activeSkeletonMeshRef={activeSkeletonMeshRef}
+            onReferenceFrame={onReferenceFrame}
+            referenceFps={referenceFps}
+          />
         </Scene>
       </Engine>
       <CameraControls sceneRef={sceneRef} isSceneReady={isSceneReady} />

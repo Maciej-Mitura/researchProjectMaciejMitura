@@ -7,11 +7,26 @@ import {
   DrawingUtils,
 } from "@mediapipe/tasks-vision";
 
+export type PoseFrame = {
+  /**
+   * Monotonic timestamp (ms) from performance.now().
+   * Good for relative timing and interval calculations.
+   */
+  timestampMs: number;
+  /**
+   * Wall-clock timestamp (ms) from Date.now().
+   * Good for logging / correlating with other data sources.
+   */
+  wallClockMs: number;
+  landmarks: any | null;
+};
+
 interface PoseCameraOverlayProps {
   showVideo?: boolean;
   mirrored?: boolean;
   inferenceFps?: number;
   onPoseDetected?: (landmarks: any) => void;
+  onPoseFrame?: (frame: PoseFrame) => void;
   onStop?: () => void;
 }
 
@@ -24,6 +39,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
   mirrored = true,
   inferenceFps = 15,
   onPoseDetected,
+  onPoseFrame,
   onStop,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -40,6 +56,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
   const [status, setStatus] = useState<string>("Loading model...");
   const [cameraFps, setCameraFps] = useState<number>(0);
   const [poseFps, setPoseFps] = useState<number>(0);
+  const isRunningRef = useRef(false);
   
   // Frame rate tracking refs
   const cameraFrameCountRef = useRef<number>(0);
@@ -79,6 +96,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
       // Reset states
       setIsCameraReady(false);
       setIsRunning(false);
+      isRunningRef.current = false;
       setCameraFps(0);
       setPoseFps(0);
       setStatus("");
@@ -326,6 +344,18 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
         // Store results for rendering
         lastPoseResultsRef.current = results;
 
+        // Emit frame to consumer (every inference tick)
+        const wallClockNow = Date.now();
+        const frame: PoseFrame = {
+          // Standardize timestamps for alignment: use Date.now() for both pose + reference.
+          timestampMs: wallClockNow,
+          wallClockMs: wallClockNow,
+          landmarks: results.landmarks && results.landmarks.length > 0 ? results.landmarks[0] : null,
+        };
+        if (onPoseFrame) {
+          onPoseFrame(frame);
+        }
+
         // Track pose detection FPS
         poseInferenceCountRef.current += 1;
         const timeSinceLastUpdate = now - poseLastFpsUpdateRef.current;
@@ -339,16 +369,14 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
         }
 
         // Mark as running (only set once)
-        setIsRunning((prev) => {
-          if (!prev) {
-            return true;
-          }
-          return prev;
-        });
+        if (!isRunningRef.current) {
+          isRunningRef.current = true;
+          setIsRunning(true);
+        }
 
         // Call callback if provided
-        if (onPoseDetected && results.landmarks && results.landmarks.length > 0) {
-          onPoseDetected(results.landmarks[0]);
+        if (onPoseDetected && frame.landmarks) {
+          onPoseDetected(frame.landmarks);
         }
       } catch (err) {
         console.error("Error during pose inference:", err);
@@ -373,10 +401,11 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
       }
       lastPoseResultsRef.current = null;
       setIsRunning(false);
+      isRunningRef.current = false;
       setPoseFps(0);
       poseInferenceCountRef.current = 0;
     };
-  }, [isInitialized, isCameraReady, inferenceFps, onPoseDetected]);
+  }, [isInitialized, isCameraReady, inferenceFps, onPoseDetected, onPoseFrame]);
 
   // Rendering loop (runs on requestAnimationFrame)
   useEffect(() => {
