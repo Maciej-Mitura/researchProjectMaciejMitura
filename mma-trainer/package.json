@@ -30,6 +30,7 @@
     "react": "19.2.3",
     "react-babylonjs": "^3.2.5-beta.2",
     "react-dom": "19.2.3",
+    "recharts": "^3.7.0",
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {

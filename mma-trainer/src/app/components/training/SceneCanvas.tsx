@@ -5,6 +5,7 @@ import { Engine, Scene, useScene } from "react-babylonjs";
 import { Vector3, SceneLoader, AssetContainer, AnimationGroup, ArcRotateCamera, AbstractMesh, Skeleton, ParticleSystem, StandardMaterial, Color3, Scene as BabylonScene } from "@babylonjs/core";
 import "@babylonjs/loaders/glTF";
 import type { Technique } from "@/app/lib/techniques";
+import { angleDeg3 } from "@/app/lib/scoring/geometry";
 import { Button } from "@/components/ui/button";
 import { RotateCcw, RotateCw, ZoomIn, ZoomOut, Home } from "lucide-react";
 
@@ -24,6 +25,10 @@ export type ReferenceFrame = {
   timestampMs: number;
   /** Wall-clock timestamp (ms) from Date.now() */
   wallClockMs: number;
+  /** Whether the configured skeleton bone-map validated successfully. */
+  referenceValid: boolean;
+  /** Optional list of missing required joints when mapping fails. */
+  referenceMissingJoints?: string[];
   /** Last engine delta time (ms) */
   deltaMs: number;
   /**
@@ -31,6 +36,12 @@ export type ReferenceFrame = {
    * Used for movement onset detection (velocity threshold).
    */
   limbPositions?: {
+    leftHip?: { x: number; y: number; z: number };
+    rightHip?: { x: number; y: number; z: number };
+    leftShoulder?: { x: number; y: number; z: number };
+    rightShoulder?: { x: number; y: number; z: number };
+    leftElbow?: { x: number; y: number; z: number };
+    rightElbow?: { x: number; y: number; z: number };
     leftWrist?: { x: number; y: number; z: number };
     rightWrist?: { x: number; y: number; z: number };
     leftAnkle?: { x: number; y: number; z: number };
@@ -46,17 +57,74 @@ export type ReferenceFrame = {
   featureVector: number[];
 };
 
+type RequiredJointKey =
+  | "leftHip"
+  | "rightHip"
+  | "leftShoulder"
+  | "rightShoulder"
+  | "leftElbow"
+  | "rightElbow"
+  | "leftWrist"
+  | "rightWrist"
+  | "leftKnee"
+  | "rightKnee"
+  | "leftAnkle"
+  | "rightAnkle";
+
+type BoneMap = Record<RequiredJointKey | "torso", string[]>;
+
+// Explicit per-technique bone maps (normalized bone names; see normalizeBoneName()).
+// Add a mapping for each new rig/technique here.
+const BONE_MAPS_BY_TECHNIQUE_ID: Record<string, BoneMap> = {
+  simple_jab: {
+    torso: ["hips", "pelvis", "spine", "spine1", "chest"],
+    leftHip: ["leftupleg"],
+    rightHip: ["rightupleg"],
+    leftShoulder: ["leftarm"],
+    rightShoulder: ["rightarm"],
+    leftElbow: ["leftforearm"],
+    rightElbow: ["rightforearm"],
+    leftWrist: ["lefthand"],
+    rightWrist: ["righthand"],
+    leftKnee: ["leftleg"],
+    rightKnee: ["rightleg"],
+    leftAnkle: ["leftfoot"],
+    rightAnkle: ["rightfoot"],
+  },
+  mmakick: {
+    torso: ["hips", "pelvis", "spine", "spine1", "chest"],
+    leftHip: ["leftupleg"],
+    rightHip: ["rightupleg"],
+    leftShoulder: ["leftarm"],
+    rightShoulder: ["rightarm"],
+    leftElbow: ["leftforearm"],
+    rightElbow: ["rightforearm"],
+    leftWrist: ["lefthand"],
+    rightWrist: ["righthand"],
+    leftKnee: ["leftleg"],
+    rightKnee: ["rightleg"],
+    leftAnkle: ["leftfoot"],
+    rightAnkle: ["rightfoot"],
+  },
+};
+
 // Component to handle technique loading inside the Scene
 function TechniqueLoader({
   technique,
   activeAnimationGroupRef,
   activeSkeletonRef,
   activeSkeletonMeshRef,
+  activeBoneMapRef,
+  activeReferenceValidRef,
+  activeReferenceMissingRef,
 }: {
   technique: Technique | null;
   activeAnimationGroupRef: React.MutableRefObject<AnimationGroup | null>;
   activeSkeletonRef: React.MutableRefObject<Skeleton | null>;
   activeSkeletonMeshRef: React.MutableRefObject<AbstractMesh | null>;
+  activeBoneMapRef: React.MutableRefObject<BoneMap | null>;
+  activeReferenceValidRef: React.MutableRefObject<boolean>;
+  activeReferenceMissingRef: React.MutableRefObject<string[]>;
 }) {
   const scene = useScene();
   const containerRef = useRef<AssetContainer | null>(null);
@@ -82,6 +150,9 @@ function TechniqueLoader({
         activeAnimationGroupRef.current = null;
         activeSkeletonRef.current = null;
         activeSkeletonMeshRef.current = null;
+        activeBoneMapRef.current = null;
+        activeReferenceValidRef.current = false;
+        activeReferenceMissingRef.current = [];
         containerRef.current.removeAllFromScene();
         containerRef.current.dispose();
         containerRef.current = null;
@@ -91,6 +162,11 @@ function TechniqueLoader({
 
     const loadTechnique = async () => {
       try {
+        // Set explicit bone-map for this technique (deterministic mapping).
+        activeBoneMapRef.current = BONE_MAPS_BY_TECHNIQUE_ID[technique.id] ?? null;
+        activeReferenceValidRef.current = false;
+        activeReferenceMissingRef.current = [];
+
         console.log("Loading technique:", technique.name, "from:", technique.assetUrl);
 
         // Clean up previous technique - be very thorough
@@ -277,6 +353,20 @@ function TechniqueLoader({
         activeSkeletonMeshRef.current =
           (container.meshes.find((m) => (m as any)?.skeleton) as AbstractMesh | undefined) ?? null;
 
+        // Validate required joints for scoring
+        const sk = activeSkeletonRef.current;
+        if (sk) {
+          const v = validateBoneMap(sk, activeBoneMapRef.current);
+          activeReferenceValidRef.current = v.ok;
+          activeReferenceMissingRef.current = v.missing;
+          if (!v.ok) {
+            console.warn("Reference skeleton mapping failed (missing joints):", v.missing);
+          }
+        } else {
+          activeReferenceValidRef.current = false;
+          activeReferenceMissingRef.current = ["skeletonMissing"];
+        }
+
         // Try to find meshes - check all meshes, not just root
         const allMeshes = container.meshes;
         const rootMeshes = allMeshes.filter((mesh) => !mesh.parent);
@@ -389,6 +479,9 @@ function TechniqueLoader({
         activeAnimationGroupRef.current = null;
         activeSkeletonRef.current = null;
         activeSkeletonMeshRef.current = null;
+        activeBoneMapRef.current = null;
+        activeReferenceValidRef.current = false;
+        activeReferenceMissingRef.current = [];
         containerRef.current.removeAllFromScene();
         containerRef.current.dispose();
         containerRef.current = null;
@@ -470,14 +563,43 @@ function getCurrentAnimationFrame(group: AnimationGroup | null): number | null {
 }
 
 function angleDeg(a: Vector3, b: Vector3, c: Vector3): number {
-  // Angle at point b between vectors (a-b) and (c-b)
-  const v1 = a.subtract(b);
-  const v2 = c.subtract(b);
-  const n1 = v1.length();
-  const n2 = v2.length();
-  if (n1 === 0 || n2 === 0) return NaN;
-  const cos = Math.min(1, Math.max(-1, Vector3.Dot(v1, v2) / (n1 * n2)));
-  return (Math.acos(cos) * 180) / Math.PI;
+  // Keep reference angle calculation consistent with camera (3D, 0..180).
+  return angleDeg3({ x: a.x, y: a.y, z: a.z }, { x: b.x, y: b.y, z: b.z }, { x: c.x, y: c.y, z: c.z });
+}
+
+function normalizePosePoints(
+  points: {
+    ls: Vector3;
+    rs: Vector3;
+    lh: Vector3;
+    rh: Vector3;
+    [k: string]: Vector3;
+  },
+  options?: { rotateShouldersHorizontal?: boolean }
+): { [k: string]: Vector3 } {
+  const rotate = options?.rotateShouldersHorizontal ?? true;
+  const hipCenter = points.lh.add(points.rh).scale(0.5);
+  const shoulderCenter = points.ls.add(points.rs).scale(0.5);
+  const scale = Vector3.Distance(hipCenter, shoulderCenter);
+  const invScale = scale > 1e-6 ? 1 / scale : 1;
+
+  // Rotate in x/y plane so shoulders are horizontal.
+  const ls0 = points.ls.subtract(hipCenter).scale(invScale);
+  const rs0 = points.rs.subtract(hipCenter).scale(invScale);
+  const dx = rs0.x - ls0.x;
+  const dy = rs0.y - ls0.y;
+  const rot = rotate ? -Math.atan2(dy, dx) : 0;
+  const cos = Math.cos(rot);
+  const sin = Math.sin(rot);
+
+  const out: { [k: string]: Vector3 } = {};
+  for (const [k, p] of Object.entries(points)) {
+    const p0 = p.subtract(hipCenter).scale(invScale);
+    const x1 = p0.x * cos - p0.y * sin;
+    const y1 = p0.x * sin + p0.y * cos;
+    out[k] = new Vector3(x1, y1, p0.z);
+  }
+  return out;
 }
 
 function normalizeBoneName(name: string): string {
@@ -487,14 +609,38 @@ function normalizeBoneName(name: string): string {
     .replace(/[^a-z0-9]+/g, ""); // remove separators
 }
 
-function findBoneByAny(skeleton: Skeleton, candidates: string[]): any | null {
-  const bones = skeleton.bones;
-  for (const cand of candidates) {
-    const needle = cand.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const match = bones.find((b) => normalizeBoneName(b.name).includes(needle));
-    if (match) return match;
+function findBoneByMap(skeleton: Skeleton, candidates: string[]): any | null {
+  // Deterministic mapping: match normalized bone name exactly to one of candidates.
+  const wanted = new Set(candidates.map((c) => c.toLowerCase().replace(/[^a-z0-9]+/g, "")));
+  for (const b of skeleton.bones) {
+    const n = normalizeBoneName(b.name);
+    if (wanted.has(n)) return b;
   }
   return null;
+}
+
+function validateBoneMap(skeleton: Skeleton, boneMap: BoneMap | null): { ok: boolean; missing: string[] } {
+  if (!boneMap) return { ok: false, missing: ["boneMapMissing"] };
+  const required: RequiredJointKey[] = [
+    "leftHip",
+    "rightHip",
+    "leftShoulder",
+    "rightShoulder",
+    "leftElbow",
+    "rightElbow",
+    "leftWrist",
+    "rightWrist",
+    "leftKnee",
+    "rightKnee",
+    "leftAnkle",
+    "rightAnkle",
+  ];
+  const missing: string[] = [];
+  for (const k of required) {
+    const bone = findBoneByMap(skeleton, boneMap[k]);
+    if (!bone) missing.push(k);
+  }
+  return { ok: missing.length === 0, missing };
 }
 
 function getBoneWorldPos(bone: any, mesh: AbstractMesh | null): Vector3 | null {
@@ -524,27 +670,26 @@ function getBoneWorldPos(bone: any, mesh: AbstractMesh | null): Vector3 | null {
  * Note: this uses best-effort bone name matching (Mixamo / common rigs).
  * If required bones aren't found, returns [] (caller can still align via animation time).
  */
-function buildReferenceAngleVector(skeleton: Skeleton, mesh: AbstractMesh | null): number[] {
-  // Arms (Mixamo-style): LeftArm -> LeftForeArm -> LeftHand
-  const lShoulderBone = findBoneByAny(skeleton, ["leftarm", "larm", "leftupperarm", "upperarm_l", "lupperarm"]);
-  const lElbowBone = findBoneByAny(skeleton, ["leftforearm", "lforearm", "leftlowerarm", "lowerarm_l", "lLowerArm"]);
-  const lWristBone = findBoneByAny(skeleton, ["lefthand", "lhand", "leftwrist", "wrist_l"]);
+function buildReferenceAngleVector(skeleton: Skeleton, mesh: AbstractMesh | null, boneMap: BoneMap | null): number[] {
+  if (!boneMap) return [];
 
-  const rShoulderBone = findBoneByAny(skeleton, ["rightarm", "rarm", "rightupperarm", "upperarm_r", "rupperarm"]);
-  const rElbowBone = findBoneByAny(skeleton, ["rightforearm", "rforearm", "rightlowerarm", "lowerarm_r", "rLowerArm"]);
-  const rWristBone = findBoneByAny(skeleton, ["righthand", "rhand", "rightwrist", "wrist_r"]);
+  const lShoulderBone = findBoneByMap(skeleton, boneMap.leftShoulder);
+  const lElbowBone = findBoneByMap(skeleton, boneMap.leftElbow);
+  const lWristBone = findBoneByMap(skeleton, boneMap.leftWrist);
 
-  // Legs (Mixamo-style): LeftUpLeg -> LeftLeg -> LeftFoot
-  const lHipBone = findBoneByAny(skeleton, ["leftupleg", "lthigh", "thigh_l", "upperleg_l"]);
-  const lKneeBone = findBoneByAny(skeleton, ["leftleg", "lcalf", "calf_l", "lowerleg_l"]);
-  const lAnkleBone = findBoneByAny(skeleton, ["leftfoot", "lfoot", "leftankle", "ankle_l"]);
+  const rShoulderBone = findBoneByMap(skeleton, boneMap.rightShoulder);
+  const rElbowBone = findBoneByMap(skeleton, boneMap.rightElbow);
+  const rWristBone = findBoneByMap(skeleton, boneMap.rightWrist);
 
-  const rHipBone = findBoneByAny(skeleton, ["rightupleg", "rthigh", "thigh_r", "upperleg_r"]);
-  const rKneeBone = findBoneByAny(skeleton, ["rightleg", "rcalf", "calf_r", "lowerleg_r"]);
-  const rAnkleBone = findBoneByAny(skeleton, ["rightfoot", "rfoot", "rightankle", "ankle_r"]);
+  const lHipBone = findBoneByMap(skeleton, boneMap.leftHip);
+  const lKneeBone = findBoneByMap(skeleton, boneMap.leftKnee);
+  const lAnkleBone = findBoneByMap(skeleton, boneMap.leftAnkle);
 
-  // Torso anchor (for shoulder angle)
-  const torsoBone = findBoneByAny(skeleton, ["hips", "pelvis", "spine", "chest"]);
+  const rHipBone = findBoneByMap(skeleton, boneMap.rightHip);
+  const rKneeBone = findBoneByMap(skeleton, boneMap.rightKnee);
+  const rAnkleBone = findBoneByMap(skeleton, boneMap.rightAnkle);
+
+  const torsoBone = findBoneByMap(skeleton, boneMap.torso);
 
   const ls = getBoneWorldPos(lShoulderBone, mesh);
   const le = getBoneWorldPos(lElbowBone, mesh);
@@ -567,14 +712,35 @@ function buildReferenceAngleVector(skeleton: Skeleton, mesh: AbstractMesh | null
     return [];
   }
 
-  const leftElbow = angleDeg(ls, le, lw);
-  const rightElbow = angleDeg(rs, re, rw);
-  const leftKnee = angleDeg(lh, lk, la);
-  const rightKnee = angleDeg(rh, rk, ra);
+  // Normalize reference pose similarly to camera:
+  // center at mid-hips, scale by hip->shoulder distance, rotate shoulders horizontal.
+  const norm = normalizePosePoints(
+    {
+      ls,
+      rs,
+      lh,
+      rh,
+      le,
+      lw,
+      re,
+      rw,
+      lk,
+      la,
+      rk,
+      ra,
+      ...(torso ? { torso } : {}),
+    },
+    { rotateShouldersHorizontal: true }
+  );
+
+  const leftElbow = angleDeg(norm.ls, norm.le, norm.lw);
+  const rightElbow = angleDeg(norm.rs, norm.re, norm.rw);
+  const leftKnee = angleDeg(norm.lh, norm.lk, norm.la);
+  const rightKnee = angleDeg(norm.rh, norm.rk, norm.ra);
 
   // Shoulder angle: torso -> shoulder -> elbow (best-effort torso anchor)
-  const leftShoulder = torso ? angleDeg(torso, ls, le) : NaN;
-  const rightShoulder = torso ? angleDeg(torso, rs, re) : NaN;
+  const leftShoulder = norm.torso ? angleDeg(norm.torso, norm.ls, norm.le) : NaN;
+  const rightShoulder = norm.torso ? angleDeg(norm.torso, norm.rs, norm.re) : NaN;
 
   const vec = [leftElbow, rightElbow, leftKnee, rightKnee, leftShoulder, rightShoulder];
   // If shoulder angles are missing (NaN), still return vector with NaNs stripped? We'll keep vector as-is.
@@ -585,18 +751,48 @@ function buildReferenceLimbPositions(
   skeleton: Skeleton,
   mesh: AbstractMesh | null
 ): ReferenceFrame["limbPositions"] {
-  // Best-effort: derive wrist/ankle positions from common bone names.
-  const lwBone = findBoneByAny(skeleton, ["lefthand", "lhand", "leftwrist", "wrist_l"]);
-  const rwBone = findBoneByAny(skeleton, ["righthand", "rhand", "rightwrist", "wrist_r"]);
-  const laBone = findBoneByAny(skeleton, ["leftfoot", "lfoot", "leftankle", "ankle_l"]);
-  const raBone = findBoneByAny(skeleton, ["rightfoot", "rfoot", "rightankle", "ankle_r"]);
+  // Deterministic mapping for limb positions uses the active bone map if available.
+  // If no map is set, omit limbPositions (referenceValid will be false).
+  return undefined;
+}
 
+function buildReferenceLimbPositionsFromMap(
+  skeleton: Skeleton,
+  mesh: AbstractMesh | null,
+  boneMap: BoneMap | null
+): ReferenceFrame["limbPositions"] {
+  if (!boneMap) return undefined;
+
+  const lsBone = findBoneByMap(skeleton, boneMap.leftShoulder);
+  const rsBone = findBoneByMap(skeleton, boneMap.rightShoulder);
+  const lhBone = findBoneByMap(skeleton, boneMap.leftHip);
+  const rhBone = findBoneByMap(skeleton, boneMap.rightHip);
+
+  const leBone = findBoneByMap(skeleton, boneMap.leftElbow);
+  const reBone = findBoneByMap(skeleton, boneMap.rightElbow);
+  const lwBone = findBoneByMap(skeleton, boneMap.leftWrist);
+  const rwBone = findBoneByMap(skeleton, boneMap.rightWrist);
+  const laBone = findBoneByMap(skeleton, boneMap.leftAnkle);
+  const raBone = findBoneByMap(skeleton, boneMap.rightAnkle);
+
+  const ls = getBoneWorldPos(lsBone, mesh);
+  const rs = getBoneWorldPos(rsBone, mesh);
+  const lh = getBoneWorldPos(lhBone, mesh);
+  const rh = getBoneWorldPos(rhBone, mesh);
+  const le = getBoneWorldPos(leBone, mesh);
+  const re = getBoneWorldPos(reBone, mesh);
   const lw = getBoneWorldPos(lwBone, mesh);
   const rw = getBoneWorldPos(rwBone, mesh);
   const la = getBoneWorldPos(laBone, mesh);
   const ra = getBoneWorldPos(raBone, mesh);
 
   const out: NonNullable<ReferenceFrame["limbPositions"]> = {};
+  if (lh) out.leftHip = { x: lh.x, y: lh.y, z: lh.z };
+  if (rh) out.rightHip = { x: rh.x, y: rh.y, z: rh.z };
+  if (ls) out.leftShoulder = { x: ls.x, y: ls.y, z: ls.z };
+  if (rs) out.rightShoulder = { x: rs.x, y: rs.y, z: rs.z };
+  if (le) out.leftElbow = { x: le.x, y: le.y, z: le.z };
+  if (re) out.rightElbow = { x: re.x, y: re.y, z: re.z };
   if (lw) out.leftWrist = { x: lw.x, y: lw.y, z: lw.z };
   if (rw) out.rightWrist = { x: rw.x, y: rw.y, z: rw.z };
   if (la) out.leftAnkle = { x: la.x, y: la.y, z: la.z };
@@ -608,12 +804,18 @@ function ReferenceSampler({
   activeAnimationGroupRef,
   activeSkeletonRef,
   activeSkeletonMeshRef,
+  activeBoneMapRef,
+  activeReferenceValidRef,
+  activeReferenceMissingRef,
   onReferenceFrame,
   referenceFps,
 }: {
   activeAnimationGroupRef: React.MutableRefObject<AnimationGroup | null>;
   activeSkeletonRef: React.MutableRefObject<Skeleton | null>;
   activeSkeletonMeshRef: React.MutableRefObject<AbstractMesh | null>;
+  activeBoneMapRef: React.MutableRefObject<BoneMap | null>;
+  activeReferenceValidRef: React.MutableRefObject<boolean>;
+  activeReferenceMissingRef: React.MutableRefObject<string[]>;
   onReferenceFrame?: (frame: ReferenceFrame) => void;
   referenceFps: number;
 }) {
@@ -646,15 +848,20 @@ function ReferenceSampler({
       if (!group || !(group as any).isPlaying) return;
       const skeleton = activeSkeletonRef.current;
       const skelMesh = activeSkeletonMeshRef.current;
+      const boneMap = activeBoneMapRef.current;
+      const referenceValid = activeReferenceValidRef.current;
+      const referenceMissingJoints = activeReferenceMissingRef.current;
 
-      const featureVector = skeleton ? buildReferenceAngleVector(skeleton, skelMesh) : [];
-      const limbPositions = skeleton ? buildReferenceLimbPositions(skeleton, skelMesh) : undefined;
+      const featureVector = skeleton && referenceValid ? buildReferenceAngleVector(skeleton, skelMesh, boneMap) : [];
+      const limbPositions = skeleton && referenceValid ? buildReferenceLimbPositionsFromMap(skeleton, skelMesh, boneMap) : undefined;
       const wallClockNow = Date.now();
 
       cb({
         // Standardize timestamps for alignment: use Date.now() for both pose + reference.
         timestampMs: wallClockNow,
         wallClockMs: wallClockNow,
+        referenceValid,
+        referenceMissingJoints: referenceValid ? undefined : referenceMissingJoints,
         deltaMs,
         limbPositions,
         animation: {
@@ -811,6 +1018,9 @@ export default function SceneCanvas({ className, technique, onReferenceFrame, re
   const activeAnimationGroupRef = useRef<AnimationGroup | null>(null);
   const activeSkeletonRef = useRef<Skeleton | null>(null);
   const activeSkeletonMeshRef = useRef<AbstractMesh | null>(null);
+  const activeBoneMapRef = useRef<BoneMap | null>(null);
+  const activeReferenceValidRef = useRef<boolean>(false);
+  const activeReferenceMissingRef = useRef<string[]>([]);
 
   // Reset scene ready state when technique changes
   useEffect(() => {
@@ -842,6 +1052,9 @@ export default function SceneCanvas({ className, technique, onReferenceFrame, re
             activeAnimationGroupRef={activeAnimationGroupRef}
             activeSkeletonRef={activeSkeletonRef}
             activeSkeletonMeshRef={activeSkeletonMeshRef}
+            activeBoneMapRef={activeBoneMapRef}
+            activeReferenceValidRef={activeReferenceValidRef}
+            activeReferenceMissingRef={activeReferenceMissingRef}
           />
           <ZoomController />
           <SceneProvider sceneRef={sceneRef} onSceneReady={handleSceneReady} />
@@ -849,6 +1062,9 @@ export default function SceneCanvas({ className, technique, onReferenceFrame, re
             activeAnimationGroupRef={activeAnimationGroupRef}
             activeSkeletonRef={activeSkeletonRef}
             activeSkeletonMeshRef={activeSkeletonMeshRef}
+            activeBoneMapRef={activeBoneMapRef}
+            activeReferenceValidRef={activeReferenceValidRef}
+            activeReferenceMissingRef={activeReferenceMissingRef}
             onReferenceFrame={onReferenceFrame}
             referenceFps={referenceFps}
           />

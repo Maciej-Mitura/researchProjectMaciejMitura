@@ -28,6 +28,7 @@ interface PoseCameraOverlayProps {
   onPoseDetected?: (landmarks: any) => void;
   onPoseFrame?: (frame: PoseFrame) => void;
   onStop?: () => void;
+  showDebugInfo?: boolean; // Show visibility/confidence info for debugging
 }
 
 export interface PoseCameraOverlayHandle {
@@ -41,6 +42,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
   onPoseDetected,
   onPoseFrame,
   onStop,
+  showDebugInfo = false,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -132,9 +134,10 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
           },
           runningMode: "VIDEO",
           numPoses: 1,
-          minPoseDetectionConfidence: 0.5,
-          minPosePresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
+          // Lower thresholds for better tracking, especially for bent arms and hands
+          minPoseDetectionConfidence: 0.3, // Lowered from 0.5
+          minPosePresenceConfidence: 0.3, // Lowered from 0.5
+          minTrackingConfidence: 0.3, // Lowered from 0.5
         });
 
         if (isMounted) {
@@ -449,20 +452,104 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
           ctx.translate(-canvas.width, 0);
         }
 
-        // Draw pose landmarks and connections
+        // Draw pose landmarks and connections with improved visibility handling
         for (const landmarks of lastPoseResultsRef.current.landmarks) {
+          if (!landmarks || landmarks.length === 0) continue;
+
+          // MediaPipe Pose landmarks: 15=left_wrist, 16=right_wrist, 19=left_index, 20=right_index
+          // Visibility threshold for drawing (lower = more permissive)
+          const VISIBILITY_THRESHOLD = 0.2; // Minimum visibility to draw landmark
+          const WRIST_VISIBILITY_THRESHOLD = 0.15; // More lenient for wrists
+          
+          // Create filtered landmarks array with visibility validation
+          // Track which landmarks are valid for drawing connections
+          const validLandmarkIndices = new Set<number>();
+          const filteredLandmarks = landmarks.map((lm: any, idx: number) => {
+            if (!lm) {
+              return { x: NaN, y: NaN, z: NaN, visibility: 0 };
+            }
+            
+            const visibility = lm.visibility ?? 1.0;
+            const isWrist = idx === 15 || idx === 16; // Left/right wrist
+            const isHand = idx === 19 || idx === 20; // Left/right index finger
+            const threshold = (isWrist || isHand) ? WRIST_VISIBILITY_THRESHOLD : VISIBILITY_THRESHOLD;
+            
+            // Validate coordinates are reasonable (within normalized 0-1 range, or will be scaled)
+            const x = lm.x ?? 0;
+            const y = lm.y ?? 0;
+            const hasValidCoords = Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1;
+            
+            // If visibility is too low OR coordinates are invalid, mark as invalid
+            if (visibility < threshold || !hasValidCoords) {
+              return { x: NaN, y: NaN, z: NaN, visibility: 0 };
+            }
+            
+            // Mark as valid for connections
+            validLandmarkIndices.add(idx);
+            return lm;
+          });
+
           // Draw connections (skeleton)
+          // MediaPipe's drawConnectors will automatically skip connections to landmarks with NaN coordinates
+          // So we can use the original POSE_CONNECTIONS and rely on the filtered landmarks array
           drawingUtils.drawConnectors(
-            landmarks,
+            filteredLandmarks,
             PoseLandmarker.POSE_CONNECTIONS,
-            { color: "#00FF00", lineWidth: 2 }
+            { 
+              color: "#00FF00", 
+              lineWidth: 2,
+            }
           );
 
-          // Draw landmarks (keypoints)
-          drawingUtils.drawLandmarks(landmarks, {
-            color: "#FF0000",
-            radius: 4,
-          });
+          // Draw landmarks (keypoints) with visibility-based rendering
+          for (let i = 0; i < landmarks.length; i += 1) {
+            const lm = landmarks[i];
+            if (!lm) continue;
+
+            // Check visibility
+            const visibility = lm.visibility ?? 1.0;
+            const isWrist = i === 15 || i === 16; // Left/right wrist
+            const isHand = i === 19 || i === 20; // Left/right index finger
+            const threshold = (isWrist || isHand) ? WRIST_VISIBILITY_THRESHOLD : VISIBILITY_THRESHOLD;
+            
+            // Skip if visibility too low
+            if (visibility < threshold) {
+              continue;
+            }
+
+            const x = lm.x * canvas.width;
+            const y = lm.y * canvas.height;
+
+            // Validate coordinates (should be within canvas bounds)
+            if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > canvas.width || y < 0 || y > canvas.height) {
+              continue;
+            }
+
+            // Use alpha based on visibility (more visible = more opaque)
+            const alpha = Math.max(0.5, Math.min(1.0, visibility));
+            
+            // Special color for wrist and hand landmarks to make them more visible
+            const isHandLandmark = isWrist || isHand;
+            const color = isHandLandmark 
+              ? `rgba(255, 200, 0, ${alpha})` // Yellow/orange for wrists/hands (more visible)
+              : `rgba(255, 0, 0, ${alpha})`; // Red for other landmarks
+
+            // Draw landmark circle with larger size for wrists
+            ctx.beginPath();
+            ctx.arc(x, y, isHandLandmark ? 6 : 4, 0, 2 * Math.PI);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.lineWidth = isHandLandmark ? 2 : 1.5;
+            ctx.stroke();
+
+            // Debug: Show visibility value for wrist/hand landmarks
+            if (showDebugInfo && isHandLandmark) {
+              ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+              ctx.font = "10px monospace";
+              ctx.fillText(`${visibility.toFixed(2)}`, x + 8, y - 8);
+            }
+          }
         }
 
         ctx.restore();
