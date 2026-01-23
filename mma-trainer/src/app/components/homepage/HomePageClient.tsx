@@ -13,18 +13,22 @@ export function HomePageClient() {
   const [cameraValidated, setCameraValidated] = useState(false);
   const [cameraTestKey, setCameraTestKey] = useState(0);
 
-  // Check if camera was already validated (e.g., on page reload)
+  // Don't auto-enable even if camera info exists - user must test camera in this session
+  // Start with cameraValidated = false to require testing
   useEffect(() => {
-    setCameraValidated(hasValidCameraInformation());
+    setCameraValidated(false);
   }, []);
 
   const handleTestCamera = () => {
     // Reset and show camera test component
     setCameraTestKey((prev) => prev + 1);
     setShowCameraTest(true);
+    // Reset validation state when starting a new test
+    setCameraValidated(false);
   };
 
   const handleValidationComplete = (isValid: boolean) => {
+    // Only enable start training if camera test passed validation
     setCameraValidated(isValid);
   };
 
@@ -33,7 +37,7 @@ export function HomePageClient() {
       {/* Header */}
       <div className="text-center space-y-4">
         <h1 className="text-4xl font-bold tracking-tight">
-          AI-Powered MMA Training
+          MMA Learning Platform
         </h1>
         <p className="text-lg text-muted-foreground">
           Real-time technique analysis and coaching in your browser

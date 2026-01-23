@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { Drawer, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
 
 // Keep camera/mediapipe out of SSR/bundles where possible
 const PoseCameraOverlay = dynamic(() => import("@/app/components/pose/PoseCameraOverlay").then((mod) => ({ default: mod.PoseCameraOverlay })), { ssr: false });
@@ -78,7 +80,7 @@ type WorstJointHint = {
   hint: string;
 };
 
-type ComparisonResult = {
+export type ComparisonResult = {
   message?: string;
   score0to100: number | null;
   rows: AngleDeltaRow[];
@@ -1485,7 +1487,7 @@ function scoreSingleAttempt(
         cameraPeakExtension: activeWindow.extPeak,
         referencePeakExtension: referenceExtPeak,
         extensionThreshold: extDeltaMin,
-        extensionPass: extDeltaPass,
+        extensionPass: extDeltaPassInitial,
         cameraElbow: undefined,
         referenceElbow: undefined,
         activeWindowStartIdx: activeWindow.startIdx,
@@ -1648,10 +1650,19 @@ function scoreSingleAttempt(
   const dtw = dtwAlignMulti(cameraSeq, refSeq, leadSide);
   const angleKeys: AngleKey[] = ["leftElbow", "rightElbow", "leftKnee", "rightKnee", "leftShoulder", "rightShoulder"];
 
-  const cameraValues: Record<AngleKey, number[]> = Object.fromEntries(angleKeys.map((k) => [k, []])) as Record<AngleKey, number[]>;
-  const refValues: Record<AngleKey, number[]> = Object.fromEntries(angleKeys.map((k) => [k, []])) as Record<AngleKey, number[]>;
-  const absErrors: Record<AngleKey, number[]> = Object.fromEntries(angleKeys.map((k) => [k, []])) as Record<AngleKey, number[]>;
-  const signedErrors: Record<AngleKey, number[]> = Object.fromEntries(angleKeys.map((k) => [k, []])) as Record<AngleKey, number[]>;
+  const makeAngleBuckets = (): Record<AngleKey, number[]> => ({
+    leftElbow: [],
+    rightElbow: [],
+    leftKnee: [],
+    rightKnee: [],
+    leftShoulder: [],
+    rightShoulder: [],
+  });
+
+  const cameraValues = makeAngleBuckets();
+  const refValues = makeAngleBuckets();
+  const absErrors = makeAngleBuckets();
+  const signedErrors = makeAngleBuckets();
 
   let matchedCount = 0;
   let dtwAvgCost: number | null = null;
@@ -1933,10 +1944,6 @@ function scoreSingleAttempt(
       windowThresholdEnd: 0.35, // baseline + 0.35*delta
       guardCameraAvg,
       guardRefAvg: refSeq.length > 0 ? mean(refSeq.map((f) => f.rearGuardDist).filter((v): v is number => typeof v === "number" && Number.isFinite(v))) : null,
-      peakVelocity: vPeak,
-      leadWristName: leadSide === "left" ? "left_wrist" : "right_wrist",
-      leadShoulderName: leadSide === "left" ? "left_shoulder" : "right_shoulder",
-      peakVelocity: vPeak,
       leadWristName: leadSide === "left" ? "left_wrist" : "right_wrist",
       leadShoulderName: leadSide === "left" ? "left_shoulder" : "right_shoulder",
     },
@@ -1956,12 +1963,12 @@ function scoreSingleAttempt(
   return result;
 }
 
-export default function LiveDemoPage() {
+function LiveDemoInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   const techniqueId = searchParams.get("techniqueId");
-  const technique: Technique | null = useMemo(() => (techniqueId ? getTechniqueById(techniqueId) : null), [techniqueId]);
+  const technique: Technique | null = useMemo(() => (techniqueId ? (getTechniqueById(techniqueId) ?? null) : null), [techniqueId]);
   const cameraMirrored = true;
   const [logOneFramePoints, setLogOneFramePoints] = useState(false);
 
@@ -1973,6 +1980,8 @@ export default function LiveDemoPage() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdownStep, setCountdownStep] = useState<CountdownStep | null>(null);
+  const [showStartDialog, setShowStartDialog] = useState(false);
+  const [showResultsDrawer, setShowResultsDrawer] = useState(false);
   const [attemptIndex, setAttemptIndex] = useState(0); // 0 = not started, 1..3 = current attempt
   const [attemptRemainingMs, setAttemptRemainingMs] = useState<number | null>(null);
   const attemptTimerRef = useRef<number | null>(null);
@@ -2354,8 +2363,7 @@ export default function LiveDemoPage() {
 
   const handlePrimaryAction = () => {
     if (phase === "idle") {
-      setAttemptIndex(1);
-      setPhase("countdown");
+      setShowStartDialog(true);
       return;
     }
     if (phase === "countdown") {
@@ -2413,136 +2421,208 @@ export default function LiveDemoPage() {
     return "Restart";
   }, [phase]);
 
+  // Get status badge variant and label
+  const statusBadge = useMemo(() => {
+    if (phase === "idle") return { variant: "idle" as const, label: "Ready" };
+    if (phase === "countdown") return { variant: "countdown" as const, label: "Countdown" };
+    if (phase === "attempt_recording") return { variant: "recording" as const, label: "Recording" };
+    if (phase === "results") return { variant: "analyzing" as const, label: "Analyzing" };
+    return { variant: "idle" as const, label: "Ready" };
+  }, [phase]);
+
+  // Get instruction text based on phase
+  const instructionText = useMemo(() => {
+    if (phase === "idle") return "Press Start to perform 3 jabs.";
+    if (phase === "countdown") return "Get ready…";
+    if (phase === "attempt_recording") return "Perform the technique now.";
+    if (phase === "results") return "Session complete. Tap “Show results” to review.";
+    if (attemptIndex > 0 && attemptIndex < 3 && phase !== "countdown" && phase !== "attempt_recording") {
+      return "Reset and prepare for the next attempt.";
+    }
+    return "Press Start to begin.";
+  }, [phase, attemptIndex]);
+
+  // Get technique category label
+  const techniqueCategory = useMemo(() => {
+    if (!technique?.category) return null;
+    const categoryMap: Record<string, string> = {
+      punch: "Boxing",
+      kick: "Striking",
+      defense: "Defense",
+      grappling: "Grappling",
+    };
+    return categoryMap[technique.category] || technique.category;
+  }, [technique]);
+
   return (
-    <div className="container mx-auto px-4 py-8 max-w-7xl relative">
-      <div className={`space-y-4 ${phase === "countdown" ? "pointer-events-none select-none" : ""}`}>
-        <Button variant="ghost" onClick={handleBack} className="mb-2" disabled={phase === "countdown"}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Back
-        </Button>
-
-        {/* Header row */}
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <Button variant="default" onClick={handlePrimaryAction} className="min-w-[140px]" disabled={false}>
-                  {primaryLabel}
-                </Button>
-                <div className="text-sm text-muted-foreground">
-                  Status: <span className="text-foreground font-medium">{statusText}</span>
-                  {phase === "results" ? (
-                    <span className="ml-2">
-                      · Frames: <span className="text-foreground font-medium">{comparison?.frameCount ?? 0}</span>
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {technique ? (
-                  <>
-                    Technique: <span className="text-foreground font-medium">{technique.name}</span>
-                  </>
-                ) : (
-                  "Technique: (none selected)"
-                )}
-              </div>
+    <div className="min-h-screen bg-background">
+      {/* Fixed Header Bar */}
+      <div className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur">
+        <div className="container mx-auto px-4 py-3 max-w-7xl">
+          <div className="flex items-center justify-between">
+            {/* Left: Back + Training label */}
+            <div className="flex items-center gap-3">
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={handleBack} 
+                disabled={phase === "countdown"}
+                className="h-8"
+              >
+                <ArrowLeft className="h-4 w-4 mr-1.5" />
+                Training
+              </Button>
             </div>
-          </CardContent>
-        </Card>
 
-        {/* Split layout */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {/* Left: Babylon animation */}
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold">Reference Animation</h2>
-              </div>
-              <div className="relative w-full aspect-square bg-muted rounded-lg overflow-hidden">
-                <SceneCanvas
-                  className="w-full h-full"
-                  technique={technique}
-                  referenceFps={15}
-                  onReferenceFrame={phase === "attempt_recording" ? handleReferenceFrame : undefined}
-                />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Right: Camera + skeleton */}
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold">Live Pose</h2>
-                {!poseReady ? (
-                  <span className="text-xs text-muted-foreground">Loading pose…</span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Pose ready</span>
-                )}
-              </div>
-
-              <PoseCameraOverlay
-                ref={poseCameraOverlayRef}
-                showVideo={true}
-                mirrored={cameraMirrored}
-                inferenceFps={15}
-                onPoseFrame={handlePoseFrame}
-              />
-
-              {/* Attempt progress indicator */}
-              {attemptIndex > 0 && attemptIndex <= 3 && (
-                <div className="mt-3 rounded-lg border bg-card p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-semibold text-foreground">Attempt {attemptIndex}/3</div>
-                    <div className="flex gap-1">
-                      {[1, 2, 3].map((i) => (
-                        <div
-                          key={i}
-                          className={`h-2 w-2 rounded-full ${
-                            i < attemptIndex ? "bg-green-500" : i === attemptIndex ? "bg-blue-500" : "bg-muted"
-                          }`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  {phase === "attempt_recording" && attemptRemainingMs != null && (
-                    <div className="mt-2 text-center space-y-2">
-                      <div className="text-2xl font-bold text-foreground">
-                        {(attemptRemainingMs / 1000).toFixed(1)}s
-                      </div>
-                      <div className="text-xs text-muted-foreground">Recording attempt...</div>
-                    </div>
-                  )}
-                  {phase === "attempt_recording" && (
-                    <div className="text-xs text-muted-foreground text-center">
-                      Perform your technique. We'll detect when you stop.
-                    </div>
-                  )}
-                </div>
+            {/* Center: Technique name with badge */}
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold text-foreground">
+                {technique?.name || "No Technique Selected"}
+              </h1>
+              {techniqueCategory && (
+                <Badge variant="secondary" className="text-xs">
+                  {techniqueCategory} • {technique?.category === "punch" ? "Strikes" : technique?.category === "kick" ? "Strikes" : "Techniques"}
+                </Badge>
               )}
+            </div>
 
-              {phase !== "attempt_recording" && phase !== "countdown" && (
-                <div className="mt-3 rounded-lg border bg-card p-3 text-center text-xs text-muted-foreground">
-                  {phase === "results" ? "All attempts complete. Review results below." : "Camera is on. Press Start to begin the countdown and record 3 attempts."}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          </div>
         </div>
+      </div>
 
-        {/* Results (shown after Stop) */}
-        {phase === "results" && (
-          <Card>
-            <CardContent className="pt-6">
-              <div className="space-y-4">
-                <div>
-                  <div className="text-base text-foreground font-semibold">Results</div>
-                  <div className="text-xs text-muted-foreground">
-                    Aggregated across {comparison?.perAttempt?.filter((p) => p.valid).length ?? 0} valid attempts
-                    {comparison?.frameCount != null ? ` (${comparison.frameCount} total frames)` : ""}.
-                    {comparison?.matchedCount != null ? ` Matched: ${comparison.matchedCount}.` : ""}
+      {/* Main Content */}
+      <div className="container mx-auto px-4 py-6 max-w-7xl">
+        <div className={`space-y-6 ${phase === "countdown" ? "pointer-events-none select-none" : ""}`}>
+          {/* 2-Column Grid: Reference + Live Pose */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {/* Left: Reference Technique Card */}
+            <Card className="shadow-sm border-0">
+              <CardContent className="pt-4 pb-4">
+                <div className="space-y-3">
+                  {/* Title row */}
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h2 className="text-base font-semibold text-foreground">Reference Technique</h2>
+                      <p className="text-xs text-muted-foreground mt-0.5">Ideal execution</p>
+                    </div>
+                    {phase === "attempt_recording" && (
+                      <Badge variant="outline" className="text-xs">
+                        Looping
+                      </Badge>
+                    )}
                   </div>
+
+                  {/* Animation container */}
+                  <div className="relative w-full aspect-square bg-muted/30 rounded-lg overflow-hidden">
+                    <SceneCanvas
+                      className="w-full h-full"
+                      technique={technique}
+                      referenceFps={15}
+                      onReferenceFrame={phase === "attempt_recording" ? handleReferenceFrame : undefined}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Right: Live Pose Card */}
+            <Card className="shadow-sm border-0">
+              <CardContent className="pt-4 pb-4">
+                <div className="space-y-3">
+                    {/* Title row */}
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h2 className="text-base font-semibold text-foreground">Your Movement</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">Live pose detection</p>
+                      </div>
+                      {poseReady && (
+                        <Badge variant="outline" className="text-xs bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20">
+                          Ready
+                        </Badge>
+                      )}
+                    </div>
+
+                  {/* Camera feed */}
+                  <div className="relative w-full aspect-video bg-black rounded-lg overflow-hidden">
+                    <PoseCameraOverlay
+                      ref={poseCameraOverlayRef}
+                      showVideo={true}
+                      mirrored={cameraMirrored}
+                      inferenceFps={15}
+                      onPoseFrame={handlePoseFrame}
+                    />
+                  </div>
+
+                  {/* Attempt progress (only show during recording) */}
+                  {attemptIndex > 0 && attemptIndex <= 3 && phase === "attempt_recording" && attemptRemainingMs != null && (
+                    <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+                      <span>Attempt {attemptIndex}/3</span>
+                      <span className="font-medium text-foreground">{(attemptRemainingMs / 1000).toFixed(1)}s remaining</span>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Control Bar - Primary Action Area */}
+          <div className="flex flex-col items-center gap-3 pt-2">
+            {phase === "results" ? (
+              <div className="flex flex-col items-center gap-2 w-full">
+                <Button
+                  size="lg"
+                  onClick={() => setShowResultsDrawer(true)}
+                  className="min-w-[200px] h-12 text-base font-semibold"
+                >
+                  Show results
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  onClick={() => {
+                    setShowResultsDrawer(false);
+                    handlePrimaryAction();
+                  }}
+                  className="min-w-[200px] h-12 text-base font-semibold"
+                >
+                  Restart Training
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant={phase === "idle" ? "default" : "outline"}
+                size="lg"
+                onClick={handlePrimaryAction}
+                disabled={phase === "countdown" || phase === "attempt_recording"}
+                className="min-w-[200px] h-12 text-base font-semibold"
+              >
+                {phase === "idle" && "Start Training"}
+                {phase === "countdown" && (countdownStep || "Cancel")}
+                {phase === "attempt_recording" && "Recording…"}
+              </Button>
+            )}
+
+            {/* Instruction text */}
+            <p className="text-sm text-muted-foreground text-center max-w-md">
+              {instructionText}
+            </p>
+          </div>
+
+
+        {/* Results (shown in Drawer) */}
+        {phase === "results" ? (
+          <Drawer open={showResultsDrawer} onOpenChange={setShowResultsDrawer}>
+            <DrawerContent className="max-h-[85vh]">
+              <DrawerHeader>
+                <DrawerTitle>Results</DrawerTitle>
+                <DrawerDescription>AI feedback, raw data, and visualizations for your 3 attempts.</DrawerDescription>
+              </DrawerHeader>
+              <div className="px-4 pb-6 overflow-y-auto">
+                <div className="text-base text-foreground font-semibold">Results</div>
+                <div className="text-xs text-muted-foreground">
+                  Aggregated across {comparison?.perAttempt?.filter((p) => p.valid).length ?? 0} valid attempts
+                  {comparison?.frameCount != null ? ` (${comparison.frameCount} total frames)` : ""}.
+                  {comparison?.matchedCount != null ? ` Matched: ${comparison.matchedCount}.` : ""}
                 </div>
 
                 <div className="flex items-baseline justify-center gap-2">
@@ -2553,12 +2633,11 @@ export default function LiveDemoPage() {
                 </div>
 
                 {/* Tabbed interface for organized results */}
-                <Tabs defaultValue="visualizations" className="w-full">
-                  <TabsList className="grid w-full grid-cols-4">
-                    <TabsTrigger value="visualizations">Visualizations</TabsTrigger>
-                    <TabsTrigger value="raw-data">Raw Data</TabsTrigger>
+                <Tabs defaultValue="ai-feedback" className="w-full">
+                  <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="ai-feedback">AI Feedback</TabsTrigger>
-                    <TabsTrigger value="analytics">Analytics</TabsTrigger>
+                    <TabsTrigger value="raw-data">Raw Data</TabsTrigger>
+                    <TabsTrigger value="visualizations">Visualizations</TabsTrigger>
                   </TabsList>
 
                   {/* Visualizations Tab */}
@@ -2663,7 +2742,7 @@ export default function LiveDemoPage() {
                                   attemptIndex: a.attemptIndex,
                                   cameraFrames: a.cameraFrames,
                                   refFrames: a.refFrames,
-                                  result: a.result,
+                                  result: a.result ?? null,
                                   valid: a.valid,
                                   cameraSeq: a.cameraSeq,
                                   refSeq: a.refSeq,
@@ -2687,7 +2766,7 @@ export default function LiveDemoPage() {
                                   attemptIndex: a.attemptIndex,
                                   cameraFrames: a.cameraFrames,
                                   refFrames: a.refFrames,
-                                  result: a.result,
+                                  result: a.result ?? null,
                                   valid: a.valid,
                                   cameraSeq: a.cameraSeq,
                                   refSeq: a.refSeq,
@@ -2712,7 +2791,7 @@ export default function LiveDemoPage() {
                                   attemptIndex: a.attemptIndex,
                                   cameraFrames: a.cameraFrames,
                                   refFrames: a.refFrames,
-                                  result: a.result,
+                                  result: a.result ?? null,
                                   valid: a.valid,
                                   cameraSeq: a.cameraSeq,
                                   refSeq: a.refSeq,
@@ -2864,7 +2943,7 @@ export default function LiveDemoPage() {
                                   attemptIndex: a.attemptIndex,
                                   cameraFrames: a.cameraFrames,
                                   refFrames: a.refFrames,
-                                  result: a.result,
+                                  result: a.result ?? null,
                                   valid: a.valid,
                                   cameraSeq: a.cameraSeq,
                                   refSeq: a.refSeq,
@@ -3244,29 +3323,102 @@ export default function LiveDemoPage() {
                     ) : null}
                   </TabsContent>
                 </Tabs>
+            </div>
+          </DrawerContent>
+        </Drawer>
+        ) : null}
+
+        {/* Countdown Overlay */}
+        {phase === "countdown" && countdownStep !== null && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm pointer-events-auto">
+            <div className="text-center space-y-4">
+              {attemptIndex > 0 && attemptIndex <= 3 && (
+                <div className="text-sm text-muted-foreground font-medium">Attempt {attemptIndex}/3</div>
+              )}
+              <div 
+                className="text-8xl sm:text-9xl font-extrabold tracking-tight tabular-nums text-foreground"
+                style={{
+                  animation: "scaleIn 0.3s ease-out",
+                }}
+              >
+                {countdownStep}
               </div>
-            </CardContent>
-          </Card>
+              <div className="text-base text-muted-foreground">
+                {attemptIndex > 0 ? `Starting attempt ${attemptIndex}…` : "Get ready…"}
+              </div>
+            </div>
+          </div>
         )}
+        </div>
       </div>
 
-      {/* Countdown overlay */}
-      {phase === "countdown" && countdownStep !== null && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm pointer-events-auto">
-          <div className="text-center space-y-3">
-            {attemptIndex > 0 && (
-              <div className="text-sm text-muted-foreground">Attempt {attemptIndex}/3</div>
-            )}
-            <div className="text-6xl sm:text-7xl font-extrabold tracking-tight tabular-nums">
-              {countdownStep}
+      {/* Start Training Drawer - Outside main container to avoid pointer-events issues */}
+      <Drawer open={showStartDialog} onOpenChange={setShowStartDialog}>
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle>Ready to Start Training?</DrawerTitle>
+            <DrawerDescription>
+              You're about to perform 3 attempts of the {technique?.name || "technique"}.
+            </DrawerDescription>
+          </DrawerHeader>
+          <div className="text-sm text-muted-foreground space-y-3 px-4">
+            <p>
+              Here's what will happen:
+            </p>
+            <ul className="list-disc list-inside space-y-1.5 text-sm ml-2">
+              <li>A countdown will begin (3... 2... 1... GO)</li>
+              <li>Each attempt will last <strong>3 seconds</strong></li>
+              <li>Perform the technique during each attempt</li>
+              <li>Once you did your technique, hold still untill the attempt is finished</li>
+              <li>After all 3 attempts, you'll see your results and feedback</li>
+            </ul>
+            <p className="pt-1">
+              Make sure you're fully in frame and have space to move before starting.
+            </p>
+          </div>
+          <DrawerFooter>
+            <Button
+              onClick={() => {
+                setShowStartDialog(false);
+                setAttemptIndex(1);
+                setPhase("countdown");
+              }}
+            >
+              I Understand
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowStartDialog(false)}
+            >
+              Cancel
+            </Button>
+          </DrawerFooter>
+        </DrawerContent>
+      </Drawer>
+    </div>
+  );
+}
+
+export default function LiveDemoPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-background">
+          <div className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur">
+            <div className="container mx-auto px-4 py-3 max-w-7xl">
+              <div className="text-sm text-muted-foreground">Loading…</div>
             </div>
-            <div className="text-sm text-muted-foreground">
-              {attemptIndex > 0 ? `Starting attempt ${attemptIndex}…` : "Starting practice… please hold position."}
+          </div>
+          <div className="container mx-auto px-4 py-6 max-w-7xl">
+            <div className="rounded-lg border bg-card p-6 text-center text-sm text-muted-foreground">
+              Preparing training session…
             </div>
           </div>
         </div>
-      )}
-    </div>
+      }
+    >
+      <LiveDemoInner />
+    </Suspense>
   );
 }
 

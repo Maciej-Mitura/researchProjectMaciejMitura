@@ -29,6 +29,7 @@ interface PoseCameraOverlayProps {
   onPoseFrame?: (frame: PoseFrame) => void;
   onStop?: () => void;
   showDebugInfo?: boolean; // Show visibility/confidence info for debugging
+  onReady?: (isReady: boolean) => void; // Callback when camera and pose detection are fully ready
 }
 
 export interface PoseCameraOverlayHandle {
@@ -43,6 +44,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
   onPoseFrame,
   onStop,
   showDebugInfo = false,
+  onReady,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -59,6 +61,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
   const [cameraFps, setCameraFps] = useState<number>(0);
   const [poseFps, setPoseFps] = useState<number>(0);
   const isRunningRef = useRef(false);
+  const readyNotifiedRef = useRef(false); // Track if we've already notified parent that we're ready
   
   // Frame rate tracking refs
   const cameraFrameCountRef = useRef<number>(0);
@@ -99,6 +102,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
       setIsCameraReady(false);
       setIsRunning(false);
       isRunningRef.current = false;
+      readyNotifiedRef.current = false; // Reset ready notification flag
       setCameraFps(0);
       setPoseFps(0);
       setStatus("");
@@ -106,6 +110,11 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
       cameraFrameCountRef.current = 0;
       poseInferenceCountRef.current = 0;
       lastPoseResultsRef.current = null;
+      
+      // Notify parent that camera is no longer ready
+      if (onReady) {
+        onReady(false);
+      }
       
       // Call onStop callback if provided
       if (onStop) {
@@ -145,6 +154,10 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
           setIsInitialized(true);
           setStatus("Requesting camera...");
           setError(null);
+          // Notify that we're not ready yet (still loading)
+          if (onReady) {
+            onReady(false);
+          }
         } else {
           poseLandmarker.close();
         }
@@ -157,6 +170,10 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
               : "Failed to initialize pose detection"
           );
           setStatus("");
+          // Notify that we're not ready due to error
+          if (onReady) {
+            onReady(false);
+          }
         }
       }
     };
@@ -272,6 +289,11 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
           if (isMounted) {
             setIsCameraReady(true);
             setStatus(""); // Clear status when running - don't show overlay
+            // Notify that camera is ready (but pose detection may not be running yet)
+            // We'll notify again when pose detection starts
+            if (onReady) {
+              onReady(false); // Still not fully ready until pose detection starts
+            }
           }
         }
       } catch (err) {
@@ -375,6 +397,13 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
         if (!isRunningRef.current) {
           isRunningRef.current = true;
           setIsRunning(true);
+        }
+
+        // Notify parent that camera and pose detection are ready (skeleton is being drawn)
+        // Ready when: isRunning, no error, and we have pose results (skeleton visible)
+        if (onReady && results.landmarks && results.landmarks.length > 0 && !error && !readyNotifiedRef.current) {
+          readyNotifiedRef.current = true;
+          onReady(true);
         }
 
         // Call callback if provided
@@ -492,11 +521,12 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
           // Draw connections (skeleton)
           // MediaPipe's drawConnectors will automatically skip connections to landmarks with NaN coordinates
           // So we can use the original POSE_CONNECTIONS and rely on the filtered landmarks array
+          // Draw connections (skeleton) - use neutral cyan/green for professional look
           drawingUtils.drawConnectors(
             filteredLandmarks,
             PoseLandmarker.POSE_CONNECTIONS,
             { 
-              color: "#00FF00", 
+              color: "#00CED1", // Dark turquoise/cyan - more professional than bright green
               lineWidth: 2,
             }
           );
@@ -531,8 +561,8 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
             // Special color for wrist and hand landmarks to make them more visible
             const isHandLandmark = isWrist || isHand;
             const color = isHandLandmark 
-              ? `rgba(255, 200, 0, ${alpha})` // Yellow/orange for wrists/hands (more visible)
-              : `rgba(255, 0, 0, ${alpha})`; // Red for other landmarks
+              ? `rgba(0, 206, 209, ${alpha})` // Cyan for wrists/hands (matches skeleton)
+              : `rgba(0, 191, 255, ${alpha})`; // Sky blue for other landmarks (professional, not harsh red)
 
             // Draw landmark circle with larger size for wrists
             ctx.beginPath();

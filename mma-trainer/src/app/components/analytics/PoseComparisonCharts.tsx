@@ -93,7 +93,7 @@ export function PoseComparisonCharts({
 
       const point = dataMap.get(frame.wallClockMs)!;
       point.extCam = frame.leadExtension;
-      point.elbowCam = frame.angles[leadElbowKey];
+      point.elbowCam = frame.angles[leadElbowKey] ?? null;
       point.guardCam = frame.rearGuardDist;
     }
 
@@ -117,7 +117,7 @@ export function PoseComparisonCharts({
 
       if (closestPoint) {
         closestPoint.extRef = frame.leadExtension;
-        closestPoint.elbowRef = frame.angles[leadElbowKey];
+        closestPoint.elbowRef = frame.angles[leadElbowKey] ?? null;
         closestPoint.guardRef = frame.rearGuardDist;
       } else {
         // Create new point for reference
@@ -127,7 +127,7 @@ export function PoseComparisonCharts({
           extCam: null,
           extRef: frame.leadExtension,
           elbowCam: null,
-          elbowRef: frame.angles[leadElbowKey],
+          elbowRef: frame.angles[leadElbowKey] ?? null,
           guardCam: null,
           guardRef: frame.rearGuardDist,
         });

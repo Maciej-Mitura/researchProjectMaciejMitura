@@ -93,8 +93,6 @@ function referenceFrameToPoseFrameExport(frame: ReferenceFrame): PoseFrameExport
     { key: "rightWrist", name: "right_wrist" },
     { key: "leftHip", name: "left_hip" },
     { key: "rightHip", name: "right_hip" },
-    { key: "leftKnee", name: "left_knee" },
-    { key: "rightKnee", name: "right_knee" },
     { key: "leftAnkle", name: "left_ankle" },
     { key: "rightAnkle", name: "right_ankle" },
   ];

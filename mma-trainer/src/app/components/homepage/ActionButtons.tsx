@@ -27,29 +27,31 @@ export function ActionButtons({
   };
 
   return (
-    <div className="flex flex-col sm:flex-row gap-4 justify-center">
-      <Button
-        variant="outline"
-        size="lg"
-        onClick={handleTestCamera}
-        className="min-w-[160px]"
-      >
-        Test Camera
-      </Button>
-      <Button
-        variant="default"
-        size="lg"
-        onClick={handleStartTraining}
-        disabled={!canStartTraining}
-        className="min-w-[160px]"
-        title={
-          !canStartTraining
-            ? "Please complete camera test first"
-            : "Start training"
-        }
-      >
-        Start Training
-      </Button>
+    <div className="flex flex-col gap-2">
+      {!canStartTraining && (
+        <p className="text-sm text-muted-foreground text-center">
+          You need to test the camera first
+        </p>
+      )}
+      <div className="flex flex-col sm:flex-row gap-4 justify-center">
+        <Button
+          variant="outline"
+          size="lg"
+          onClick={handleTestCamera}
+          className="min-w-[160px]"
+        >
+          Test Camera
+        </Button>
+        <Button
+          variant="default"
+          size="lg"
+          onClick={handleStartTraining}
+          disabled={!canStartTraining}
+          className="min-w-[160px]"
+        >
+          Start Training
+        </Button>
+      </div>
     </div>
   );
 }
