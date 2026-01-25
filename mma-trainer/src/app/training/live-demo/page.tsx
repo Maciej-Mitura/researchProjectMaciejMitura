@@ -769,6 +769,10 @@ function normalizeReferencePoints(p: NonNullable<ReferenceFrame["limbPositions"]
   re?: { x: number; y: number; z: number };
   lw?: { x: number; y: number; z: number };
   rw?: { x: number; y: number; z: number };
+  lk?: { x: number; y: number; z: number };
+  rk?: { x: number; y: number; z: number };
+  la?: { x: number; y: number; z: number };
+  ra?: { x: number; y: number; z: number };
 } | null {
   const ls = p.leftShoulder;
   const rs = p.rightShoulder;
@@ -809,6 +813,54 @@ function normalizeReferencePoints(p: NonNullable<ReferenceFrame["limbPositions"]
     re: p.rightElbow ? rotXY(p.rightElbow) : undefined,
     lw: p.leftWrist ? rotXY(p.leftWrist) : undefined,
     rw: p.rightWrist ? rotXY(p.rightWrist) : undefined,
+    lk: p.leftKnee ? rotXY(p.leftKnee) : undefined,
+    rk: p.rightKnee ? rotXY(p.rightKnee) : undefined,
+    la: p.leftAnkle ? rotXY(p.leftAnkle) : undefined,
+    ra: p.rightAnkle ? rotXY(p.rightAnkle) : undefined,
+  };
+}
+
+function computeReferenceLeadExtension(frame: ReferenceFrame, leadSide: "left" | "right"): number | null {
+  if (!frame.limbPositions) return null;
+  const norm = normalizeReferencePoints(frame.limbPositions);
+  if (!norm) return null;
+
+  const shoulderCenter = { x: (norm.ls.x + norm.rs.x) / 2, y: (norm.ls.y + norm.rs.y) / 2, z: (norm.ls.z + norm.rs.z) / 2 };
+  const torsoLength = Math.max(1e-6, dist3({ x: 0, y: 0, z: 0 }, shoulderCenter));
+
+  // Dimensionless extension metric: |wrist - shoulder| / torsoLength
+  const extL = norm.lw ? dist3(norm.lw, norm.ls) / torsoLength : null;
+  const extR = norm.rw ? dist3(norm.rw, norm.rs) / torsoLength : null;
+  const leadExt = leadSide === "left" ? extL : extR;
+  return typeof leadExt === "number" && Number.isFinite(leadExt) ? leadExt : null;
+}
+
+function computeReferenceKickMetrics(
+  frame: ReferenceFrame
+): { left: { ext: number | null; ankleY: number | null; kneeAngle: number | null }; right: { ext: number | null; ankleY: number | null; kneeAngle: number | null } } | null {
+  if (!frame.limbPositions) return null;
+  const norm = normalizeReferencePoints(frame.limbPositions);
+  if (!norm) return null;
+
+  const shoulderCenter = { x: (norm.ls.x + norm.rs.x) / 2, y: (norm.ls.y + norm.rs.y) / 2, z: (norm.ls.z + norm.rs.z) / 2 };
+  const torsoLength = Math.max(1e-6, dist3({ x: 0, y: 0, z: 0 }, shoulderCenter));
+
+  // Leg extension metric: |ankle - hip| / torsoLength
+  const extL = norm.la ? dist3(norm.la, norm.lh) / torsoLength : null;
+  const extR = norm.ra ? dist3(norm.ra, norm.rh) / torsoLength : null;
+  const kneeL = norm.lh && norm.lk && norm.la ? angleDeg3(norm.lh, norm.lk, norm.la) : null;
+  const kneeR = norm.rh && norm.rk && norm.ra ? angleDeg3(norm.rh, norm.rk, norm.ra) : null;
+  return {
+    left: {
+      ext: typeof extL === "number" && Number.isFinite(extL) ? extL : null,
+      ankleY: typeof norm.la?.y === "number" && Number.isFinite(norm.la.y) ? norm.la.y : null,
+      kneeAngle: typeof kneeL === "number" && Number.isFinite(kneeL) ? kneeL : null,
+    },
+    right: {
+      ext: typeof extR === "number" && Number.isFinite(extR) ? extR : null,
+      ankleY: typeof norm.ra?.y === "number" && Number.isFinite(norm.ra.y) ? norm.ra.y : null,
+      kneeAngle: typeof kneeR === "number" && Number.isFinite(kneeR) ? kneeR : null,
+    },
   };
 }
 
@@ -1985,10 +2037,24 @@ function LiveDemoInner() {
   const [attemptIndex, setAttemptIndex] = useState(0); // 0 = not started, 1..3 = current attempt
   const [attemptRemainingMs, setAttemptRemainingMs] = useState<number | null>(null);
   const attemptTimerRef = useRef<number | null>(null);
+  const countdownAudioRef = useRef<HTMLAudioElement | null>(null);
+  const jabStretchAudioRef = useRef<HTMLAudioElement | null>(null);
+  const kickWhooshAudioRef = useRef<HTMLAudioElement | null>(null);
+  const refLeadStretchActiveRef = useRef(false);
+  const refLeadExtStatsRef = useRef<{ min: number; max: number } | null>(null);
+  const refLastAnimationFrameRef = useRef<number | null>(null);
+  const techniqueIdRef = useRef<string | null>(null);
+  const refKickStatsRef = useRef<{
+    left: { ext: { min: number; max: number }; ankleY: { min: number; max: number }; kneeAngle: { min: number; max: number } };
+    right: { ext: { min: number; max: number }; ankleY: { min: number; max: number }; kneeAngle: { min: number; max: number } };
+  } | null>(null);
+  const refKickLegRef = useRef<"left" | "right" | null>(null);
+  const refKickPlayedRef = useRef<{ extended: boolean; bent: boolean }>({ extended: false, bent: false });
   const [poseReady, setPoseReady] = useState(false);
   const poseReadyRef = useRef(false);
   const phaseRef = useRef<Phase>("idle");
   const attemptIndexRef = useRef(0);
+  const [referencePlayToken, setReferencePlayToken] = useState(0);
   const poseCameraOverlayRef = useRef<PoseCameraOverlayHandle>(null);
   const [comparison, setComparison] = useState<ComparisonResult | null>(null);
   const ignoreNextOnStopRef = useRef(false);
@@ -2024,6 +2090,28 @@ function LiveDemoInner() {
   useEffect(() => {
     attemptIndexRef.current = attemptIndex;
   }, [attemptIndex]);
+
+  useEffect(() => {
+    techniqueIdRef.current = technique?.id ?? null;
+    refLeadStretchActiveRef.current = false;
+    refLeadExtStatsRef.current = null;
+    refKickStatsRef.current = null;
+    refKickLegRef.current = null;
+    refKickPlayedRef.current = { extended: false, bent: false };
+    refLastAnimationFrameRef.current = null;
+  }, [technique?.id]);
+
+  useEffect(() => {
+    if (phase !== "countdown") return;
+    const audio = countdownAudioRef.current;
+    if (!audio) return;
+    audio.currentTime = 0;
+    void audio.play().catch(() => {});
+    return () => {
+      audio.pause();
+      audio.currentTime = 0;
+    };
+  }, [phase]);
 
   // Fixed-duration attempt timer: 3 seconds per attempt
   useEffect(() => {
@@ -2099,6 +2187,7 @@ function LiveDemoInner() {
       attempt.endWallClockMs = null;
       attempt.cameraFrames = [];
       attempt.refFrames = [];
+      setReferencePlayToken((token) => token + 1);
     }
   }, [phase, attemptIndex]);
 
@@ -2155,6 +2244,153 @@ function LiveDemoInner() {
       const oldestTs = referenceFramesRef.current[0].wallClockMs ?? 0;
       if (oldestTs >= cutoff) break;
       referenceFramesRef.current.shift();
+    }
+
+    const currentFrame = frame.animation.currentFrame;
+    const prevFrame = refLastAnimationFrameRef.current;
+    if (typeof currentFrame === "number") {
+      if (typeof prevFrame === "number" && currentFrame < prevFrame - 1) {
+        // Animation looped - allow a new trigger.
+        refLeadStretchActiveRef.current = false;
+        refKickPlayedRef.current = { extended: false, bent: false };
+      }
+      refLastAnimationFrameRef.current = currentFrame;
+    }
+
+    const techniqueId = techniqueIdRef.current;
+    if (techniqueId === "simple_jab") {
+      const leadSide = leadSideRef.current;
+      const leadExt = computeReferenceLeadExtension(frame, leadSide);
+      if (leadExt == null) return;
+
+      const stats = refLeadExtStatsRef.current;
+      if (!stats) {
+        refLeadExtStatsRef.current = { min: leadExt, max: leadExt };
+      } else {
+        stats.min = Math.min(stats.min, leadExt);
+        stats.max = Math.max(stats.max, leadExt);
+      }
+
+      const updatedStats = refLeadExtStatsRef.current;
+      if (!updatedStats) return;
+
+      const range = updatedStats.max - updatedStats.min;
+      const MIN_RANGE = 0.06;
+      const STRETCH_ON_RATIO = 0.88;
+      const STRETCH_OFF_RATIO = 0.7;
+      const onThreshold = updatedStats.min + range * STRETCH_ON_RATIO;
+      const offThreshold = updatedStats.min + range * STRETCH_OFF_RATIO;
+      const hasRange = range >= MIN_RANGE;
+      const isStretched = hasRange ? leadExt >= onThreshold : false;
+
+      if (isStretched && !refLeadStretchActiveRef.current) {
+        if (currentPhase !== "countdown") {
+          const audio = jabStretchAudioRef.current;
+          if (audio) {
+            audio.currentTime = 0;
+            void audio.play().catch(() => {});
+          }
+        }
+        refLeadStretchActiveRef.current = true;
+        return;
+      }
+      if (!isStretched && refLeadStretchActiveRef.current && leadExt <= offThreshold) {
+        refLeadStretchActiveRef.current = false;
+      }
+      return;
+    }
+
+    if (techniqueId === "mmakick") {
+      const metrics = computeReferenceKickMetrics(frame);
+      if (!metrics) return;
+
+      const stats = refKickStatsRef.current;
+      if (!stats) {
+        refKickStatsRef.current = {
+          left: {
+            ext: { min: metrics.left.ext ?? Infinity, max: metrics.left.ext ?? -Infinity },
+            ankleY: { min: metrics.left.ankleY ?? Infinity, max: metrics.left.ankleY ?? -Infinity },
+            kneeAngle: { min: metrics.left.kneeAngle ?? Infinity, max: metrics.left.kneeAngle ?? -Infinity },
+          },
+          right: {
+            ext: { min: metrics.right.ext ?? Infinity, max: metrics.right.ext ?? -Infinity },
+            ankleY: { min: metrics.right.ankleY ?? Infinity, max: metrics.right.ankleY ?? -Infinity },
+            kneeAngle: { min: metrics.right.kneeAngle ?? Infinity, max: metrics.right.kneeAngle ?? -Infinity },
+          },
+        };
+      } else {
+        const update = (side: "left" | "right") => {
+          const m = metrics[side];
+          if (typeof m.ext === "number") {
+            stats[side].ext.min = Math.min(stats[side].ext.min, m.ext);
+            stats[side].ext.max = Math.max(stats[side].ext.max, m.ext);
+          }
+          if (typeof m.ankleY === "number") {
+            stats[side].ankleY.min = Math.min(stats[side].ankleY.min, m.ankleY);
+            stats[side].ankleY.max = Math.max(stats[side].ankleY.max, m.ankleY);
+          }
+          if (typeof m.kneeAngle === "number") {
+            stats[side].kneeAngle.min = Math.min(stats[side].kneeAngle.min, m.kneeAngle);
+            stats[side].kneeAngle.max = Math.max(stats[side].kneeAngle.max, m.kneeAngle);
+          }
+        };
+        update("left");
+        update("right");
+      }
+
+      const updatedStats = refKickStatsRef.current;
+      if (!updatedStats) return;
+
+      const leftRange = updatedStats.left.ext.max - updatedStats.left.ext.min;
+      const rightRange = updatedStats.right.ext.max - updatedStats.right.ext.min;
+      const MIN_EXT_RANGE = 0.08;
+      if (!refKickLegRef.current && (leftRange >= MIN_EXT_RANGE || rightRange >= MIN_EXT_RANGE)) {
+        refKickLegRef.current = leftRange >= rightRange ? "left" : "right";
+      }
+
+      const kickLeg = refKickLegRef.current;
+      if (!kickLeg) return;
+
+      const legStats = updatedStats[kickLeg];
+      const legMetrics = metrics[kickLeg];
+      if (!legStats || !legMetrics) return;
+
+      const extRange = legStats.ext.max - legStats.ext.min;
+      const heightRange = legStats.ankleY.max - legStats.ankleY.min;
+      const kneeRange = legStats.kneeAngle.max - legStats.kneeAngle.min;
+      const MIN_HEIGHT_RANGE = 0.12;
+      const MIN_KNEE_RANGE = 25;
+      if (extRange < MIN_EXT_RANGE || heightRange < MIN_HEIGHT_RANGE || kneeRange < MIN_KNEE_RANGE) return;
+
+      const footInAir = typeof legMetrics.ankleY === "number" && legMetrics.ankleY >= legStats.ankleY.min + heightRange * 0.6;
+      if (!footInAir) return;
+
+      const nearExtension = typeof legMetrics.ext === "number" && legMetrics.ext >= legStats.ext.min + extRange * 0.9;
+      const kneeBent = typeof legMetrics.kneeAngle === "number" && legMetrics.kneeAngle <= legStats.kneeAngle.min + kneeRange * 0.35;
+
+      const played = refKickPlayedRef.current;
+
+      if (nearExtension && !played.extended) {
+        if (currentPhase !== "countdown") {
+          const audio = kickWhooshAudioRef.current;
+          if (audio) {
+            audio.currentTime = 0;
+            void audio.play().catch(() => {});
+          }
+        }
+        refKickPlayedRef.current = { ...played, extended: true };
+        return;
+      }
+      if (kneeBent && !played.bent) {
+        if (currentPhase !== "countdown") {
+          const audio = kickWhooshAudioRef.current;
+          if (audio) {
+            audio.currentTime = 0;
+            void audio.play().catch(() => {});
+          }
+        }
+        refKickPlayedRef.current = { ...played, bent: true };
+      }
     }
   }, []);
 
@@ -2456,6 +2692,9 @@ function LiveDemoInner() {
 
   return (
     <div className="min-h-screen bg-background">
+      <audio ref={countdownAudioRef} src="/audio/321_countdown_beep.mp3" preload="auto" />
+      <audio ref={jabStretchAudioRef} src="/audio/jab_stretch_sound.mp3" preload="auto" />
+      <audio ref={kickWhooshAudioRef} src="/audio/kick_whoosh_sound.mp3" preload="auto" />
       {/* Fixed Header Bar */}
       <div className="sticky top-0 z-30 border-b bg-background/95 backdrop-blur">
         <div className="container mx-auto px-4 py-3 max-w-7xl">
@@ -2518,7 +2757,9 @@ function LiveDemoInner() {
                       className="w-full h-full"
                       technique={technique}
                       referenceFps={15}
-                      onReferenceFrame={phase === "attempt_recording" ? handleReferenceFrame : undefined}
+                      onReferenceFrame={handleReferenceFrame}
+                      animationMode={phase === "attempt_recording" ? "once" : "paused"}
+                      playToken={referencePlayToken}
                     />
                   </div>
                 </div>

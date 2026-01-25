@@ -18,6 +18,8 @@ type SceneCanvasProps = {
    */
   onReferenceFrame?: (frame: ReferenceFrame) => void;
   referenceFps?: number;
+  animationMode?: "loop" | "once" | "paused";
+  playToken?: number;
 };
 
 export type ReferenceFrame = {
@@ -44,6 +46,8 @@ export type ReferenceFrame = {
     rightElbow?: { x: number; y: number; z: number };
     leftWrist?: { x: number; y: number; z: number };
     rightWrist?: { x: number; y: number; z: number };
+    leftKnee?: { x: number; y: number; z: number };
+    rightKnee?: { x: number; y: number; z: number };
     leftAnkle?: { x: number; y: number; z: number };
     rightAnkle?: { x: number; y: number; z: number };
   };
@@ -117,6 +121,7 @@ function TechniqueLoader({
   activeBoneMapRef,
   activeReferenceValidRef,
   activeReferenceMissingRef,
+  onAnimationGroupReady,
 }: {
   technique: Technique | null;
   activeAnimationGroupRef: React.MutableRefObject<AnimationGroup | null>;
@@ -125,6 +130,7 @@ function TechniqueLoader({
   activeBoneMapRef: React.MutableRefObject<BoneMap | null>;
   activeReferenceValidRef: React.MutableRefObject<boolean>;
   activeReferenceMissingRef: React.MutableRefObject<string[]>;
+  onAnimationGroupReady?: (group: AnimationGroup | null) => void;
 }) {
   const scene = useScene();
   const containerRef = useRef<AssetContainer | null>(null);
@@ -335,17 +341,22 @@ function TechniqueLoader({
           }
 
           if (targetGroup) {
-            // Use start(true) for looping as in the example
-            targetGroup.start(true); // loop = true
-            console.log("Started animation:", targetGroup.name);
+            // Defer playback control to the parent (loop/once/paused).
             activeAnimationGroupRef.current = targetGroup;
+            if (typeof (targetGroup as any).goToFrame === "function") {
+              const startFrame = typeof targetGroup.from === "number" ? targetGroup.from : 0;
+              (targetGroup as any).goToFrame(startFrame);
+            }
+            console.log("Loaded animation group:", targetGroup.name);
           } else {
             console.warn("No animation group found to play");
             activeAnimationGroupRef.current = null;
           }
+          onAnimationGroupReady?.(activeAnimationGroupRef.current);
         } else {
           console.warn("No animation groups found in the loaded model");
           activeAnimationGroupRef.current = null;
+          onAnimationGroupReady?.(null);
         }
 
         // Track a primary skeleton reference if available
@@ -772,6 +783,8 @@ function buildReferenceLimbPositionsFromMap(
   const reBone = findBoneByMap(skeleton, boneMap.rightElbow);
   const lwBone = findBoneByMap(skeleton, boneMap.leftWrist);
   const rwBone = findBoneByMap(skeleton, boneMap.rightWrist);
+  const lkBone = findBoneByMap(skeleton, boneMap.leftKnee);
+  const rkBone = findBoneByMap(skeleton, boneMap.rightKnee);
   const laBone = findBoneByMap(skeleton, boneMap.leftAnkle);
   const raBone = findBoneByMap(skeleton, boneMap.rightAnkle);
 
@@ -783,6 +796,8 @@ function buildReferenceLimbPositionsFromMap(
   const re = getBoneWorldPos(reBone, mesh);
   const lw = getBoneWorldPos(lwBone, mesh);
   const rw = getBoneWorldPos(rwBone, mesh);
+  const lk = getBoneWorldPos(lkBone, mesh);
+  const rk = getBoneWorldPos(rkBone, mesh);
   const la = getBoneWorldPos(laBone, mesh);
   const ra = getBoneWorldPos(raBone, mesh);
 
@@ -795,6 +810,8 @@ function buildReferenceLimbPositionsFromMap(
   if (re) out.rightElbow = { x: re.x, y: re.y, z: re.z };
   if (lw) out.leftWrist = { x: lw.x, y: lw.y, z: lw.z };
   if (rw) out.rightWrist = { x: rw.x, y: rw.y, z: rw.z };
+  if (lk) out.leftKnee = { x: lk.x, y: lk.y, z: lk.z };
+  if (rk) out.rightKnee = { x: rk.x, y: rk.y, z: rk.z };
   if (la) out.leftAnkle = { x: la.x, y: la.y, z: la.z };
   if (ra) out.rightAnkle = { x: ra.x, y: ra.y, z: ra.z };
   return Object.keys(out).length > 0 ? out : undefined;
@@ -1009,7 +1026,7 @@ function CameraControls({ sceneRef, isSceneReady }: { sceneRef: React.MutableRef
   );
 }
 
-export default function SceneCanvas({ className, technique, onReferenceFrame, referenceFps = 15 }: SceneCanvasProps) {
+export default function SceneCanvas({ className, technique, onReferenceFrame, referenceFps = 15, animationMode = "loop", playToken }: SceneCanvasProps) {
   // Use technique ID in canvas ID to force a new Engine/Scene when technique changes
   // This ensures complete cleanup and prevents old meshes from persisting
   const canvasId = `training-canvas-${technique?.id || "none"}`;
@@ -1021,6 +1038,8 @@ export default function SceneCanvas({ className, technique, onReferenceFrame, re
   const activeBoneMapRef = useRef<BoneMap | null>(null);
   const activeReferenceValidRef = useRef<boolean>(false);
   const activeReferenceMissingRef = useRef<string[]>([]);
+  const [animationReadyToken, setAnimationReadyToken] = useState(0);
+  const lastPlayTokenRef = useRef<number | null>(null);
 
   // Reset scene ready state when technique changes
   useEffect(() => {
@@ -1030,6 +1049,55 @@ export default function SceneCanvas({ className, technique, onReferenceFrame, re
   const handleSceneReady = useCallback((_scene: BabylonScene) => {
     setIsSceneReady(true);
   }, []);
+
+  useEffect(() => {
+    const group = activeAnimationGroupRef.current;
+    if (!group) return;
+
+    if (animationMode === "loop") {
+      if (!(group as any).isPlaying) {
+        group.start(true);
+      }
+      return;
+    }
+
+    if (animationMode === "paused") {
+      group.stop();
+      if (typeof (group as any).goToFrame === "function") {
+        const startFrame = typeof group.from === "number" ? group.from : 0;
+        (group as any).goToFrame(startFrame);
+      }
+      return;
+    }
+
+    if (animationMode === "once") {
+      if (playToken == null) return;
+      if (lastPlayTokenRef.current === playToken) return;
+      lastPlayTokenRef.current = playToken;
+
+      group.stop();
+      if (typeof (group as any).goToFrame === "function") {
+        const startFrame = typeof group.from === "number" ? group.from : 0;
+        (group as any).goToFrame(startFrame);
+      }
+      group.start(false);
+    }
+  }, [animationMode, playToken, animationReadyToken, technique?.id]);
+
+  useEffect(() => {
+    const group = activeAnimationGroupRef.current;
+    if (!group || animationMode !== "once") return;
+    const observer = group.onAnimationGroupEndObservable.add(() => {
+      group.stop();
+      if (typeof (group as any).goToFrame === "function") {
+        const startFrame = typeof group.from === "number" ? group.from : 0;
+        (group as any).goToFrame(startFrame);
+      }
+    });
+    return () => {
+      group.onAnimationGroupEndObservable.remove(observer);
+    };
+  }, [animationMode, animationReadyToken, technique?.id]);
 
   return (
     <div
@@ -1055,6 +1123,7 @@ export default function SceneCanvas({ className, technique, onReferenceFrame, re
             activeBoneMapRef={activeBoneMapRef}
             activeReferenceValidRef={activeReferenceValidRef}
             activeReferenceMissingRef={activeReferenceMissingRef}
+            onAnimationGroupReady={() => setAnimationReadyToken((v) => v + 1)}
           />
           <ZoomController />
           <SceneProvider sceneRef={sceneRef} onSceneReady={handleSceneReady} />
