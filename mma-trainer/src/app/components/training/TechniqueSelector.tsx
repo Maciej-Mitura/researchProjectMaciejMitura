@@ -87,7 +87,7 @@ export function TechniqueSelector({
           <Button
             variant="default"
             onClick={handleSelect}
-            className="flex-1"
+            className="flex-1  "
             disabled={selectedTechniqueId === currentTechnique.id}
           >
             {selectedTechniqueId === currentTechnique.id
@@ -101,7 +101,7 @@ export function TechniqueSelector({
             onClick={handleNext}
             disabled={techniques.length <= 1}
           >
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-4 w-4 " />
           </Button>
         </div>
 

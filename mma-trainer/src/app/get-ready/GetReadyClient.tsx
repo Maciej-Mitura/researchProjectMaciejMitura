@@ -84,7 +84,7 @@ export default function GetReadyClient() {
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
       <div className="space-y-6">
-        <Button variant="ghost" onClick={handleBack} className="mb-4">
+        <Button variant="ghost" onClick={handleBack} className="mb-4 cursor-pointer">
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Setup
         </Button>
@@ -116,7 +116,7 @@ export default function GetReadyClient() {
               ref={poseCameraOverlayRef}
               showVideo={true}
               mirrored={true}
-              inferenceFps={15}
+              inferenceFps={30}
               onReady={handleCameraReady}
             />
             {!cameraReady && (
@@ -137,7 +137,7 @@ export default function GetReadyClient() {
           <Button
             variant="default"
             size="lg"
-            className="min-w-[200px]"
+            className="min-w-[200px] hover:cursor-pointer" 
             onClick={handleStartPractice}
             disabled={!cameraReady || !technique}
           >

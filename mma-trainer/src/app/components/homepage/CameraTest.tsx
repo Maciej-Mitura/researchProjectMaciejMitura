@@ -215,7 +215,7 @@ export function CameraTest({
           <div className="flex items-center justify-between">
             {showTitle && <CardTitle>Camera Test</CardTitle>}
             {showStopButton && isStreaming && (
-              <Button variant="destructive" size="sm" onClick={stopCamera}>
+              <Button variant="destructive" size="sm" onClick={stopCamera} className="hover:cursor-pointer">
                 Stop Camera
               </Button>
             )}

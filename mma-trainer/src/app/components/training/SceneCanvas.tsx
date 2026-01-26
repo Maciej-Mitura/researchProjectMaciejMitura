@@ -1004,22 +1004,22 @@ function CameraControls({ sceneRef, isSceneReady }: { sceneRef: React.MutableRef
   return (
     <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
       <div className="flex gap-1.5">
-        <Button variant="outline" size="icon-sm" onClick={handleRotateLeft} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Rotate left" title="Rotate left">
+        <Button variant="outline" size="icon-sm" onClick={handleRotateLeft} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90 cursor-pointer" aria-label="Rotate left" title="Rotate left">
           <RotateCcw className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="icon-sm" onClick={handleRotateRight} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Rotate right" title="Rotate right">
+        <Button variant="outline" size="icon-sm" onClick={handleRotateRight} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90 cursor-pointer" aria-label="Rotate right" title="Rotate right">
           <RotateCw className="h-4 w-4" />
         </Button>
       </div>
       <div className="flex gap-1.5">
-        <Button variant="outline" size="icon-sm" onClick={handleZoomIn} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Zoom in" title="Zoom in">
+        <Button variant="outline" size="icon-sm" onClick={handleZoomIn} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90 cursor-pointer" aria-label="Zoom in" title="Zoom in">
           <ZoomIn className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="icon-sm" onClick={handleZoomOut} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Zoom out" title="Zoom out">
+        <Button variant="outline" size="icon-sm" onClick={handleZoomOut} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90 cursor-pointer" aria-label="Zoom out" title="Zoom out">
           <ZoomOut className="h-4 w-4" />
         </Button>
       </div>
-      <Button variant="outline" size="icon-sm" onClick={handleReset} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90" aria-label="Reset camera" title="Reset camera">
+      <Button variant="outline" size="icon-sm" onClick={handleReset} className="h-8 w-8 bg-background/80 backdrop-blur-sm hover:bg-background/90 cursor-pointer" aria-label="Reset camera" title="Reset camera">
         <Home className="h-4 w-4" />
       </Button>
     </div>

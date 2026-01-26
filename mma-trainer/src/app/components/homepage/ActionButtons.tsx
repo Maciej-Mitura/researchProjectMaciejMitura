@@ -38,7 +38,7 @@ export function ActionButtons({
           variant="outline"
           size="lg"
           onClick={handleTestCamera}
-          className="min-w-[160px]"
+          className="min-w-[160px] hover:cursor-pointer"
         >
           Test Camera
         </Button>
@@ -47,7 +47,7 @@ export function ActionButtons({
           size="lg"
           onClick={handleStartTraining}
           disabled={!canStartTraining}
-          className="min-w-[160px]"
+          className="min-w-[160px] hover:cursor-pointer"
         >
           Start Training
         </Button>

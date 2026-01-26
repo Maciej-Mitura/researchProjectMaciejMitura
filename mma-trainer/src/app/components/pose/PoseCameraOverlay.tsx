@@ -52,6 +52,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const inferenceIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const cameraFpsIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastPoseResultsRef = useRef<any>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isCameraReady, setIsCameraReady] = useState(false);
@@ -210,6 +211,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
             width: { ideal: 1280 },
             height: { ideal: 720 },
             facingMode: "user",
+            frameRate: { ideal: 30, min: 30 },
           },
           audio: false,
         };
@@ -245,7 +247,7 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
 
           // Track camera frame rate
           if (videoRef.current) {
-            // Get initial frame rate from video track settings
+            // Get frame rate from video track settings (most accurate)
             const videoTrack = stream.getVideoTracks()[0];
             if (videoTrack && videoTrack.getSettings) {
               const settings = videoTrack.getSettings();
@@ -254,36 +256,48 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
               }
             }
 
-            // Track actual camera frame rate by monitoring video updates
-            let lastVideoTime = videoRef.current.currentTime;
-            const trackCameraFps = () => {
-              if (!videoRef.current || !isMounted) return;
+            // Track actual camera frame rate by monitoring video frame updates
+            // Use requestVideoFrameCallback if available (most accurate), otherwise fallback to currentTime
+            if (videoRef.current) {
+              cameraLastFpsUpdateRef.current = performance.now();
+              cameraFrameCountRef.current = 0;
               
-              const currentTime = videoRef.current.currentTime;
-              // If video time has advanced, count it as a frame
-              if (currentTime !== lastVideoTime) {
-                cameraFrameCountRef.current += 1;
-                lastVideoTime = currentTime;
+              // FPS calculation interval (runs every second)
+              cameraFpsIntervalRef.current = setInterval(() => {
+                if (!isMounted) return;
+                const now = performance.now();
+                const timeSinceLastUpdate = now - cameraLastFpsUpdateRef.current;
+                if (timeSinceLastUpdate >= 1000) {
+                  const fps = Math.round((cameraFrameCountRef.current * 1000) / timeSinceLastUpdate);
+                  setCameraFps(fps);
+                  cameraFrameCountRef.current = 0;
+                  cameraLastFpsUpdateRef.current = now;
+                }
+              }, 1000);
+              
+              // Frame counting: use requestVideoFrameCallback if available (fires on each new video frame)
+              if ('requestVideoFrameCallback' in videoRef.current) {
+                const countFrames = () => {
+                  if (!videoRef.current || !isMounted) return;
+                  cameraFrameCountRef.current += 1;
+                  (videoRef.current as any).requestVideoFrameCallback(countFrames);
+                };
+                (videoRef.current as any).requestVideoFrameCallback(countFrames);
+              } else {
+                // Fallback: monitor currentTime changes via requestAnimationFrame
+                let lastVideoTime = videoRef.current.currentTime;
+                const trackViaAnimationFrame = () => {
+                  if (!videoRef.current || !isMounted) return;
+                  const currentTime = videoRef.current.currentTime;
+                  if (currentTime !== lastVideoTime) {
+                    cameraFrameCountRef.current += 1;
+                    lastVideoTime = currentTime;
+                  }
+                  requestAnimationFrame(trackViaAnimationFrame);
+                };
+                trackViaAnimationFrame();
               }
-              
-              const now = performance.now();
-              const timeSinceLastUpdate = now - cameraLastFpsUpdateRef.current;
-              
-              // Update FPS every second
-              if (timeSinceLastUpdate >= 1000) {
-                const fps = Math.round((cameraFrameCountRef.current * 1000) / timeSinceLastUpdate);
-                setCameraFps(fps);
-                cameraFrameCountRef.current = 0;
-                cameraLastFpsUpdateRef.current = now;
-              }
-              
-              if (isMounted) {
-                requestAnimationFrame(trackCameraFps);
-              }
-            };
-            
-            cameraLastFpsUpdateRef.current = performance.now();
-            trackCameraFps();
+            }
           }
 
           if (isMounted) {
@@ -327,6 +341,11 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
 
     return () => {
       isMounted = false;
+      // Cleanup camera FPS tracking interval
+      if (cameraFpsIntervalRef.current) {
+        clearInterval(cameraFpsIntervalRef.current);
+        cameraFpsIntervalRef.current = null;
+      }
       // Cleanup camera stream
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => {
@@ -353,8 +372,8 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
     const video = videoRef.current;
     const landmarker = landmarkerRef.current;
 
-    // Calculate interval in milliseconds (50-66ms for 15-20 FPS)
-    const inferenceInterval = Math.max(50, Math.min(66, 1000 / inferenceFps));
+    // Calculate interval in milliseconds (33ms for 30 FPS, 50-66ms for 15-20 FPS)
+    const inferenceInterval = Math.max(33, Math.min(66, 1000 / inferenceFps));
 
     // Run inference on interval
     const runInference = () => {
@@ -637,9 +656,6 @@ export const PoseCameraOverlay = forwardRef<PoseCameraOverlayHandle, PoseCameraO
       {/* Frame rate indicators (top-right corner) - only when actually running */}
       {isRunning && !error && !status && (
         <div className="absolute top-2 right-2 z-10 flex gap-2">
-          <div className="bg-green-500/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-white font-medium">
-            Camera: {cameraFps} FPS
-          </div>
           <div className="bg-yellow-500/80 backdrop-blur-sm px-2 py-1 rounded text-xs text-white font-medium">
             Pose: {poseFps} FPS
           </div>

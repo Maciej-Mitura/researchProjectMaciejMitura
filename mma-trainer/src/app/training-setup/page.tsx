@@ -51,7 +51,7 @@ export default function TrainingPage() {
     <div className="container mx-auto px-4 py-8 max-w-5xl overflow-hidden">
       <div className="space-y-6">
         {/* Back Button */}
-        <Button variant="ghost" onClick={handleBack} className="mb-4">
+        <Button variant="ghost" onClick={handleBack} className="mb-4 cursor-pointer">
           <ArrowLeft className="h-4 w-4 mr-2" />
           Back to Home
         </Button>
@@ -70,7 +70,7 @@ export default function TrainingPage() {
           <div className="relative flex items-center justify-center gap-4">
             {/* Left Arrow */}
             {techniques.length > 1 && (
-              <Button variant="outline" size="icon" onClick={handlePrevious} className="h-12 w-12 shrink-0" aria-label="Previous technique">
+              <Button variant="outline" size="icon" onClick={handlePrevious} className="h-12 w-12 shrink-0 cursor-pointer" aria-label="Previous technique">
                 <ChevronLeft className="h-6 w-6" />
               </Button>
             )}
@@ -83,7 +83,7 @@ export default function TrainingPage() {
 
             {/* Right Arrow */}
             {techniques.length > 1 && (
-              <Button variant="outline" size="icon" onClick={handleNext} className="h-12 w-12 shrink-0" aria-label="Next technique">
+              <Button variant="outline" size="icon" onClick={handleNext} className="h-12 w-12 shrink-0 cursor-pointer" aria-label="Next technique">
                 <ChevronRight className="h-6 w-6" />
               </Button>
             )}
@@ -92,7 +92,7 @@ export default function TrainingPage() {
 
         {/* Select Button - Below Animation */}
         <div className="flex justify-center">
-          <Button variant="default" size="lg" onClick={handleSelect} disabled={!currentTechnique} className="min-w-[200px]">
+          <Button variant="default" size="lg" onClick={handleSelect} disabled={!currentTechnique} className="min-w-[200px] hover:cursor-pointer">
             Select Technique
           </Button>
         </div>
