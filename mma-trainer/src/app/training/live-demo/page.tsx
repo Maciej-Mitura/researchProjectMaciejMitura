@@ -3906,14 +3906,14 @@ function LiveDemoInner() {
                         </p>
                         <div className="space-y-3 mt-4 text-left">
                           <div className="flex items-start gap-3">
-                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 flex-shrink-0"></div>
+                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 shrink-0"></div>
                             <div>
                               <div className="font-semibold text-foreground">AI Feedback</div>
                               <div className="text-xs">Get personalized coaching feedback and improvement suggestions based on your performance.</div>
                             </div>
                           </div>
                           <div className="flex items-start gap-3">
-                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 flex-shrink-0"></div>
+                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 shrink-0"></div>
                             <div>
                               <div className="font-semibold text-foreground">Raw Data</div>
                               <div className="text-xs">View detailed per-attempt scores, feature errors, and technical metrics.</div>
@@ -3921,10 +3921,24 @@ function LiveDemoInner() {
                             </div>
                           </div>
                           <div className="flex items-start gap-3">
-                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 flex-shrink-0"></div>
+                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 shrink-0"></div>
                             <div>
                               <div className="font-semibold text-foreground">Visualizations</div>
                               <div className="text-xs">See your movements compared to the reference technique in data-visualizations.</div>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 shrink-0"></div>
+                            <div>
+                              <div className="font-semibold text-foreground">Scoring</div>
+                              <div className="text-xs">Explanation on how the score is being calculated.</div>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <div className="w-2 h-2 rounded-full bg-primary mt-1.5 shrink-0"></div>
+                            <div>
+                              <div className="font-semibold text-foreground">Peak Debugging</div>
+                              <div className="text-xs">This is for developers only, to help with further math + calculations on the total score.</div>
                             </div>
                           </div>
                         </div>
