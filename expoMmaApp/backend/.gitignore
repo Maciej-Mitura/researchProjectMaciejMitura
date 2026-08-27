@@ -1,0 +1,26 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tmp/
+
+# Backend-only secrets. Never commit API keys.
+.env
+.env*.local
+
+# Recorded human reference media (may contain real people). Never commit.
+data/reference-techniques/*
+!data/reference-techniques/.gitkeep
+
+# Prototype validation metrics. Local research data only; never commit.
+data/validation-runs/*
+!data/validation-runs/.gitkeep
+
+*.log
+.DS_Store
+Thumbs.db

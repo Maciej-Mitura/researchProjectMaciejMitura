@@ -1,0 +1,21 @@
+# MMA Trainer V2 pose backend
+# Tested with CPython 3.11.5 (Windows amd64).
+# Do not use the Inkscape `python` 3.10.5 on PATH; it is not CPython and
+# has no MediaPipe wheels.
+#
+# OpenCV is provided by opencv-contrib-python because mediapipe 1.0.1
+# depends on it. Do not also install opencv-python or opencv-python-headless
+# in the same environment — the two packages overwrite cv2.
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32
+mediapipe==1.0.1
+numpy==2.4.6
+opencv-contrib-python==5.0.0.93
+pydantic==2.13.4
+pytest==9.1.1
+httpx==0.28.1
+python-dotenv==1.2.3
+openai==3.4.0
+google-genai==2.20.0

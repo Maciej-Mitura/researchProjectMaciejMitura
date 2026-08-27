@@ -3730,7 +3730,7 @@ function LiveDemoInner() {
                   <div className="flex items-start justify-between">
                     <div>
                       <h2 className="text-base font-semibold text-foreground">Reference Technique</h2>
-                      <p className="text-xs text-muted-foreground mt-0.5">Ideal execution</p>
+                      {/* <p className="text-xs text-muted-foreground mt-0.5">Ideal execution</p> */}
                       <p className="text-xs text-muted-foreground mt-0.5">The technique will start playing once you start the training</p>
                     </div>
                     {phase === "attempt_recording" && (
